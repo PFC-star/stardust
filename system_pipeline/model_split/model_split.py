@@ -30,8 +30,8 @@ class ModelSplit:
             Method for splitting a module graph based on split_size
         """
 
-        graph = gm.graph #计算图
-        node_list = [i for i in gm.graph.nodes] #计算图中每个操作的id
+        graph = gm.graph # Computation graph
+        node_list = [i for i in gm.graph.nodes] # ID of each operation in the computation graph
         subgraph_list = []
 
         # find call_module nodes

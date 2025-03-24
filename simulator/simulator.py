@@ -4,7 +4,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from tabulate import tabulate
 
-# 定义ping延迟和带宽数组（单位：秒、MB）
+# Define ping latency and bandwidth arrays (unit: seconds, MB)
 ping_latency_total = [
     [0, 0.034866, 0.017796, 0.076512, 0.030985],
     [0.03257, 0, 0.027257, 0.079517, 0.018823],
@@ -13,7 +13,7 @@ ping_latency_total = [
     [0.021318, 0.034842, 0.019245, 0.042098, 0]
 ]
 
-# 带宽数组（单位：MB/s）
+# Bandwidth array (unit: MB/s)
 bandwidths_total = [
     [float("inf"), 1.666069031, 1.81388855, 2.56729126, 4.906654358],
     [0.312805176, float("inf"), 1.200675964, 0.575065613, 0.590324402],
@@ -23,10 +23,10 @@ bandwidths_total = [
 ]
 
 
-# 定义通信数据大小
-data_size_kb = 20  # 20 KB = 160 千比特
+# Define communication data size
+data_size_kb = 20  # 20 KB = 160 kilobits
 
-# 定义加载时间和推理时间的函数
+# Define loading time and inference time functions
 def load_time(M, device):
     param_ = load_time_param[device]
     a = param_[0]
@@ -39,11 +39,12 @@ def inference_time(m,device):
     # print("inference_time_:",inference_time_)
     return inference_time_
 
-# 计算设备之间的通信时间
+# Calculate communication time between devices
 def communication_time(i, j, data_size_kb=20):
-    data_size_kilobits = data_size_kb/ 1024 # 转换为MB
+    data_size_kilobits = data_size_kb/ 1024 # Convert to MB
     commu_time= ping_latency_total[i][j] + data_size_kilobits / bandwidths_total[i][j]
     return commu_time
+
 # Simulated annealing function
 
 def memory_constraint(Mi):
@@ -131,7 +132,7 @@ def calc_total_time(Mi):
     for i in range(1, n):
         load_start = 0
         load_end = load_time(Mi[i],selected_device_index[i])
-        infer_start = max(stages[i - 1]['comm_end'], load_end) # 上一轮通信结束或者本轮load结束之后才可以开启推理
+        infer_start = max(stages[i - 1]['comm_end'], load_end) # Inference can start after previous round communication ends or current load finishes
 
         infer_end = infer_start + inference_time(Mi[i],selected_device_index[i])
         comm_start = infer_end
@@ -154,11 +155,11 @@ def calc_total_time(Mi):
 
 
 def print_stage_info(stages):
-    # 创建数据表格
+    # Create data table
     table = []
-    headers = ['设备', '加载开始 (s)', '加载结束 (s)', '推理开始 (s)', '推理结束 (s)', '通信开始 (s)', '通信结束 (s)']
+    headers = ['Device', 'Load Start (s)', 'Load End (s)', 'Inference Start (s)', 'Inference End (s)', 'Comm Start (s)', 'Comm End (s)']
 
-    # 填充数据
+    # Fill data
     for i, stage in enumerate(stages):
         row = [
             i,
@@ -171,31 +172,31 @@ def print_stage_info(stages):
         ]
         table.append(row)
 
-    # 使用 tabulate 格式化输出表格
+    # Use tabulate to format output table
     print(tabulate(table, headers=headers, floatfmt=".2f", tablefmt="grid"))
 
 
 def plot_pipeline(results_plot):
-    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(10,4*n), sharex=True)  # 横向排列两个子图
+    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(10,4*n), sharex=True)  # Horizontal arrangement of two subplots
     for index, ax in enumerate(axes):
         stages, (min_index,last_load_time), recovery_time_single_device_lst = results_plot[index]
 
 
         for i, stage in enumerate(stages):
-            # 加载阶段
+            # Load stage
             ax.broken_barh([(stage['load_start'], stage['load_end'] - stage['load_start'])], (i - 0.4, 0.8),
                            facecolors='tab:blue', label="load" if i == 0 else "")
-            # 推理阶段
+            # Inference stage
             ax.broken_barh([(stage['infer_start'], stage['infer_end'] - stage['infer_start'])], (i - 0.4, 0.8),
                            facecolors='tab:green', label="infer" if i == 0 else "")
-            # 通信阶段
+            # Communication stage
             ax.broken_barh([(stage['comm_start'], stage['comm_end'] - stage['comm_start'])], (i - 0.4, 0.8),
                            facecolors='tab:red', label="commu" if i == 0 else "")
             if selected_device_index.index(min_index)== i:
-                # 加载阶段
+                # Load stage
                 ax.broken_barh([(stage['comm_end'],last_load_time)], (i - 0.4, 0.8),
                                facecolors='tab:cyan', label="load remain" )
-        # 单设备恢复
+        # Single device recovery
         for index,single_device in enumerate(recovery_time_single_device_lst):
               ax.broken_barh([(0, single_device)], (i +(index+1) - 0.4, 0.8),
                        facecolors='tab:grey', label="single device" if i == 0 else "")
@@ -205,10 +206,10 @@ def plot_pipeline(results_plot):
         ax.set_yticklabels([f'device {i}' for i in selected_device_index+selected_device_index])
         ax.grid(True)
         ax.legend()
-    plt.tight_layout()  # 调整子图之间的间距
+    plt.tight_layout()  # Adjust spacing between subplots
     plt.show()
 
-# 单手机进行恢复
+# Single phone recovery
 
 def recovery_time_single_device(selected_device_index):
     for i in  selected_device_index:
@@ -216,7 +217,7 @@ def recovery_time_single_device(selected_device_index):
         inference_time_single_device = inference_time(M_total,i)
         commu_time_single_device = communication_time(i,initial_device_index)
         recovery_time_single_device = load_time_single_device + inference_time_single_device + commu_time_single_device
-        # print(f"单设备:{i} 恢复时间: {recovery_time_single_device:.2f} 秒")
+        # print(f"Single device:{i} Recovery time: {recovery_time_single_device:.2f} seconds")
         print(recovery_time_single_device)
 
         recovery_time_single_device_lst.append(recovery_time_single_device)
@@ -316,62 +317,62 @@ for param_dict in param_list:
     device_lst = ["device" + str(i) for i in selected_device_index]
     print("device_lst:", device_lst)
 
-    # 定义总模型大小和设备数量
-    # M_total = 1 # 设备3上的完整模型大小
-    n = len(selected_device_index)  # n个设备
+    # Define total model size and device count
+    # M_total = 1 # Full model size on device 3
+    n = len(selected_device_index)  # n devices
 
     recovery_time_single_device(selected_device_index)
 
-    # 运行优化并记录时间
+    # Run optimization and record time
 
-    # 多手机最优恢复（Ours)
+    # Multi-phone optimal recovery (Ours)
     best_Mi, best_time, stages = simulated_annealing(M_total, n)
 
     min_recovery_time, min_index, last_load_time = last_load(best_Mi, stages)
     last_load_time_tuple = (min_index, last_load_time)
     print("last_load_time:",last_load_time)
-    # print(f"最佳子模型分配: {best_Mi}")
-    # print(f"最小无感恢复时间: {best_time:.2f} 秒")
-    # print(f"最完全恢复时间: {min_recovery_time:.2f} 秒")
+    # print(f"Best submodel allocation: {best_Mi}")
+    # print(f"Minimum imperceptible recovery time: {best_time:.2f} seconds")
+    # print(f"Complete recovery time: {min_recovery_time:.2f} seconds")
     results_out.append([best_Mi, best_time, min_recovery_time, min_index])
     results_plot.append([stages, last_load_time_tuple, recovery_time_single_device_lst])
-    # # 打印每个设备的时间段信息
+    # # Print time segment information for each device
     # print_stage_info(stages)
 
-    # 多手机随机恢复
-    # 均分
+    # Multi-phone random recovery
+    # Even split
 
     for i in range(30):
         best_Mi, best_time, stages = simulated_annealing_random(M_total, n)
         min_recovery_time, min_index, last_load_time = last_load(best_Mi, stages)
         last_load_time_tuple = (min_index, last_load_time)
-        # 记录结果
+        # Record results
 
         results_plot.append([stages, last_load_time_tuple, recovery_time_single_device_lst])
         results.append([best_Mi, best_time, min_recovery_time])
 
-    # 画出流水线图
+    # Draw pipeline diagram
     plot_pipeline(results_plot)
 
-    # 转换为 DataFrame
-    df_results = pd.DataFrame(results, columns=["子模型分配", "无感恢复时间 (秒)", "完全恢复时间 (秒)"])
-    # 计算均值并添加到表格
-    mean_times = df_results[["无感恢复时间 (秒)", "完全恢复时间 (秒)"]].mean()
-    mean_times["子模型分配"] = "均值"
+    # Convert to DataFrame
+    df_results = pd.DataFrame(results, columns=["Submodel Allocation", "Imperceptible Recovery Time (seconds)", "Complete Recovery Time (seconds)"])
+    # Calculate mean and add to table
+    mean_times = df_results[["Imperceptible Recovery Time (seconds)", "Complete Recovery Time (seconds)"]].mean()
+    mean_times["Submodel Allocation"] = "Mean"
     df_results = pd.concat([df_results, pd.DataFrame([mean_times], columns=df_results.columns)], ignore_index=True)
-    # tools.display_dataframe_to_user(name="模拟退火结果", dataframe=df_results)
+    # tools.display_dataframe_to_user(name="Simulated Annealing Results", dataframe=df_results)
     # print(df_results)
-    # print(f"最佳子模型分配: {best_Mi}")
-    # print(f"无感恢复时间: {df_results['无感恢复时间 (秒)'].iloc[-1]:.2f} 秒")
-    # print(f"完全恢复时间: {df_results['完全恢复时间 (秒)'].iloc[-1]:.2f} 秒")
+    # print(f"Best submodel allocation: {best_Mi}")
+    # print(f"Imperceptible recovery time: {df_results['Imperceptible Recovery Time (seconds)'].iloc[-1]:.2f} seconds")
+    # print(f"Complete recovery time: {df_results['Complete Recovery Time (seconds)'].iloc[-1]:.2f} seconds")
     recovery_time_single_device([0])
     break
 
     results_out.append(
-        [[], df_results['无感恢复时间 (秒)'].iloc[-1], df_results['完全恢复时间 (秒)'].iloc[-1], min_index])
+        [[], df_results['Imperceptible Recovery Time (seconds)'].iloc[-1], df_results['Complete Recovery Time (seconds)'].iloc[-1], min_index])
 
     df_results_out = pd.DataFrame(results_out,
-                                  columns=["子模型分配", "无感恢复时间 (秒)", "完全恢复时间 (秒)", "二次加载选择设备"])
+                                  columns=["Submodel Allocation", "Imperceptible Recovery Time (seconds)", "Complete Recovery Time (seconds)", "Secondary Load Device"])
 print(df_results_out)
 
 
@@ -380,19 +381,19 @@ os.makedirs( "results",exist_ok=True)
 excel_file_path = 'results/df_results_out_transposed.csv'
 df_results_out.T.to_csv(excel_file_path, header=False)
 
-# 模拟每个手机的状态，包括性能、积分等
+# Simulate each phone's state, including performance, points, etc.
 class Phone:
     def __init__(self, id, performance, available_time):
         self.id = id
-        self.performance = performance  # 性能（计算能力，越大越快）
-        self.available_time = available_time  # 手机空闲时间，单位为秒
+        self.performance = performance  # Performance (calculation ability, the larger the faster)
+        self.available_time = available_time  # Phone idle time, unit seconds
         self.is_free = True
-        self.used_time = 0  # 用于记录手机使用的时间
+        self.used_time = 0  # Used to record phone usage time
 
     def use(self, task):
         if self.is_free:
             self.is_free = False
-            processing_time = task.complexity / self.performance  # 根据任务复杂度与手机性能来计算处理时间
+            processing_time = task.complexity / self.performance  # Calculate processing time based on task complexity and phone performance
             self.used_time = processing_time
             return processing_time
         return None
@@ -401,61 +402,61 @@ class Phone:
         self.is_free = True
         self.used_time = 0
 
-# 用户类，表示每个用户的手机、积分等
+# User class, representing each user's phone, points, etc.
 class User:
     def __init__(self, id, phone, initial_points):
         self.id = id
         self.phone = phone
-        self.points = initial_points  # 用户初始积分
+        self.points = initial_points  # User initial points
 
     def spend_points(self, points):
-        """消耗积分"""
+        """Consume points"""
         self.points -= points
 
     def earn_points(self, points):
-        """获得积分"""
+        """Earn points"""
         self.points += points
 
-# 任务类，表示推理任务，包含任务复杂度和所需的手机处理的时间
+# Task class, representing inference task, containing task complexity and required phone processing time
 class Task:
     def __init__(self, token_count, model_complexity):
-        self.token_count = token_count  # token数量
-        self.model_complexity = model_complexity  # 模型复杂度
-        self.complexity = self.token_count * self.model_complexity  # 总任务复杂度 = token数 * 模型复杂度
+        self.token_count = token_count  # token count
+        self.model_complexity = model_complexity  # Model complexity
+        self.complexity = self.token_count * self.model_complexity  # Total task complexity = token count * model complexity
 
-# 模拟器类，管理任务调度、积分计算等
+# Simulator class, managing task scheduling, point calculation, etc.
 class Simulator:
     def __init__(self, users):
-        self.users = users  # 用户列表
+        self.users = users  # User list
 
     def execute_task(self, main_user, task):
         """
-        主用户发起推理任务，协同用户参与推理。
-        主用户消耗积分，协同用户获得积分。
+        Main user initiates inference task, collaborative users participate in inference.
+        Main user consumes points, collaborative users earn points.
         """
-        # 计算任务的总时间和每个协同用户的任务分配情况
+        # Calculate total task time and task allocation for each collaborative user
         total_processing_time = 0
         total_points_consumed = 0
         total_points_earned = 0
 
-        # 任务拆分给多个协同用户处理
+        # Task split among multiple collaborative users
         for user in self.users:
             if user != main_user:
                 phone = user.phone
                 processing_time = phone.use(task)
                 if processing_time is not None:
                     total_processing_time += processing_time
-                    # 协同用户根据他们的处理时间和任务复杂度来赚取积分
+                    # Collaborative users earn points based on their processing time and task complexity
                     points_earned = task.complexity * (processing_time / total_processing_time)
                     user.earn_points(points_earned)
                     total_points_earned += points_earned
 
-        # 主用户消耗积分
+        # Main user consumes points
         points_spent = task.complexity * (total_processing_time / task.complexity)*3
         main_user.spend_points(points_spent)
         total_points_consumed += points_spent
 
-        # 输出任务执行情况
+        # Output task execution information
         print(f"Task executed by main user {main_user.id} with {len(self.users) - 1} collaborative users.")
         print(f"Total points consumed by main user: {total_points_consumed:.2f}")
         print(f"Total points earned by collaborative users: {total_points_earned:.2f}")
@@ -464,15 +465,15 @@ class Simulator:
         for user in self.users:
             print(f"User {user.id}: {user.points:.2f} points")
 
-# 主程序
+# Main program
 if __name__ == "__main__":
-    # 创建用户和他们的手机
+    # Create users and their phones
     users = [User(i, Phone(i, random.uniform(1, 5), random.randint(5, 10)), 100) for i in range(5)]
-    main_user = users[0]  # 假设第一个用户是主用户
+    main_user = users[0]  # Assume the first user is the main user
 
-    # 创建任务
+    # Create task
     task = Task(token_count=1000, model_complexity=0.5)
 
-    # 创建并运行模拟器
+    # Create and run simulator
     simulator = Simulator(users)
     simulator.execute_task(main_user, task)

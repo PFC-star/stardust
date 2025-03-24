@@ -224,7 +224,7 @@ def communication_open_close(sender, config, status, conditions, lock=True, open
             # print(status)
 
         elif msg == b"Running":
-            # Todo Send data to the header、 machine, wait result from tailer machine
+            # Todo Send data to the header, machine, wait result from tailer machine
             pass
 
         elif msg == b'Finish':

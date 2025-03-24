@@ -133,7 +133,7 @@ def tensor_comparision(cfg, received_data, threshold = 0.9):
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Communication")
-    parser.add_argument('--root', help='The root ip of this communication', default="169.234.9.247")
+    parser.add_argument('--root', help='The root ip of this communication', default="192.168.1.1")
     parser.add_argument('--local', help='The local ip of this machine', default="127.0.0.1")
     parser.add_argument('--prevNodes', nargs='+',  help='The ip lists of previous nodes  ', default=[])
     parser.add_argument('--nextNodes', nargs='+',  help='The ip lists of next nodes  ', default=[])

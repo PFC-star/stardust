@@ -7,7 +7,7 @@ object Dim{
     var height: Int = 0
 }
 
-var serverIp = "192.168.50.214"
+var serverIp = "127.0.0.1"
 
 val exampleModelName = listOf(
     "bloom560m",

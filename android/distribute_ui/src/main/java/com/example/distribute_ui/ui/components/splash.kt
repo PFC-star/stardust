@@ -45,8 +45,8 @@ fun SplashScreen(onAnimationEnd: () -> Unit){
 
     LaunchedEffect(Unit) {
         startAnimation = true
-        delay(100) // 停留时间
-        onAnimationEnd() // 动画结束后回调
+        delay(100) // Display time
+        onAnimationEnd() // Callback after animation ends
     }
 
     Box(
@@ -59,10 +59,10 @@ fun SplashScreen(onAnimationEnd: () -> Unit){
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(top = 50.dp) // 图片距离屏幕顶部 100dp
+                .padding(top = 50.dp) // Image distance from screen top
         ) {
             Image(
-                painter = painterResource(id = R.drawable.icon_1),  // 替换为你的图片资源
+                painter = painterResource(id = R.drawable.icon_1),  // Replace with your image resource
                 contentDescription = "",
                 modifier = Modifier
                     .padding(start = 50.dp, end = 50.dp)
@@ -79,16 +79,16 @@ fun SplashScreen(onAnimationEnd: () -> Unit){
                 Text(
                     text = "StarDust",
                     color = Color.White,
-                    fontSize = 42.sp, // 字号 20sp
+                    fontSize = 42.sp, // Font size 42sp
                     fontFamily = moFont,
                     letterSpacing = 6.sp,
-                    fontWeight = FontWeight.Bold // 加粗
+                    fontWeight = FontWeight.Bold // Bold text
                 )
-                Spacer(modifier = Modifier.height(20.dp)) // 第二行文本间隔 20dp
+                Spacer(modifier = Modifier.height(20.dp)) // 20dp spacing between texts
                 Text(
-                    text = "让世界没有推不起来的模型",
+                    text = "No model too large to run",
                     color = Color.White,
-                    fontSize = 20.sp, // 字号 16sp
+                    fontSize = 20.sp, // Font size 20sp
                     fontWeight = FontWeight.Normal,
                     fontFamily = pingFont,
                     letterSpacing = 4.sp

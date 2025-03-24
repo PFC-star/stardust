@@ -1,7 +1,7 @@
 import socket
 
 def start_server():
-    server_ip = '192.168.1.6'
+    server_ip = '127.0.0.1'  # Use localhost as a generic placeholder
     server_port = 23456
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

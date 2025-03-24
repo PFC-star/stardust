@@ -289,18 +289,18 @@ if __name__ == "__main__":
         if i["role"] == "worker":
             workerIP = i["ip"]
 
-    # 修改file_cfg json文件中的ip地址
+    # Modify IP address in file_cfg JSON file
     if not Quntization_Option:
         data = [
-            [str(headerIP), "/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom1b1_unquantized_res/device0/module0/module.zip"],
-            [str(workerIP), '/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom1b1_unquantized_res/device1/module1/module.zip']
+            [str(headerIP), "onnx_model__/to_send/bloom1b1_unquantized_res/device0/module0/module.zip"],
+            [str(workerIP), 'onnx_model__/to_send/bloom1b1_unquantized_res/device1/module1/module.zip']
         ]
     else:
         data = [
             [str(headerIP),
-             "/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom1b1_quantized_int8_res/device0/module0/module.zip"],
+             "onnx_model__/to_send/bloom1b1_quantized_int8_res/device0/module0/module.zip"],
             [str(workerIP),
-             '/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom1b1_quantized_int8_res/device1/module1/module.zip']
+             'onnx_model__/to_send/bloom1b1_quantized_int8_res/device1/module1/module.zip']
         ]
     with open(os.path.join(to_send_path, 'ip_module.json'), 'w') as file:
 

@@ -40,7 +40,7 @@ class InferenceService() : Service() {
         serviceScope.launch {
             withContext(Dispatchers.IO) {
 //                val configCreator = ConfigCreator()
-//                configCreator.setRootServerIP("128.195.41.39")
+//                configCreator.setRootServerIP("192.168.1.100")
 //                Log.d(TAG, "set root server IP")
 ////                configCreator.sendIPToServer(updateInfo!![0], updateInfo[1])
 //                Log.d(TAG, "send IP to server")
@@ -93,7 +93,7 @@ class InferenceService() : Service() {
 //        val executor = Executors.newSingleThreadExecutor()
 //        executor.submit<Any?> {
 //            val configCreator = ConfigCreator()
-//            configCreator.setRootServerIP("128.195.41.39")
+//            configCreator.setRootServerIP("192.168.1.100")
 //            Log.d(TAG, "set root server IP")
 //            configCreator.sendIPToServer(updateInfo!![0], updateInfo[1])
 //            Log.d(TAG, "send IP to server")

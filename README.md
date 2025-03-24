@@ -14,7 +14,7 @@ This project consists of two main components: a server-side application for runn
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/StarDust.git
+   git clone https://github.com/stardust-project/StarDust.git
    cd StarDust
    ```
 

@@ -41,7 +41,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun TopBar(scope: CoroutineScope, drawerState: DrawerState, navController: NavController){
     val gradientBrush = Brush.horizontalGradient(
-        colors = listOf(Color(0xFFDAB800), Color(0xFFD4C159)) // 从左到右的渐变
+        colors = listOf(Color(0xFFDAB800), Color(0xFFD4C159)) // Gradient from left to right
     )
     val moFont = FontFamily(
         Font(R.font.mono)
@@ -83,12 +83,12 @@ fun TopBar(scope: CoroutineScope, drawerState: DrawerState, navController: NavCo
             Icon(Icons.Outlined.Edit, "", tint = Color.White,
                 modifier = Modifier.size(36.dp).padding(end = 10.dp)
                     .clickable {
-                        navController.navigate("Start") {
-                            // 弹出到 "Chat" 路由，inclusive = true 表示包括 "Chat" 本身
+                        navController.navigate("Chat") {
+                            // Pop up to the "Chat" route, inclusive = true means including "Chat" itself
                             popUpTo("Chat") {
                                 inclusive = true
                             }
-                            // 确保只在栈顶存在一个 "Chat" 实例，并不恢复之前的状态
+                            // Ensure only one instance of "Chat" exists at the top of the stack, and don't restore previous state
                             launchSingleTop = true
                             restoreState = false
                         }

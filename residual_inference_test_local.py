@@ -64,7 +64,7 @@ def run_residual_inference(input_for_export, modules, sequential_dependency_map,
                 print(tensors.dtype)
             output = submodule.forward(*current_inputs)
             buffer.update(index, output)
-        # 用最后一个token的到output的idx
+        # Use the last token's idx to get the output
         next_token = torch.argmax(output_[:,-1,:], dim=-1)
         print(f'Inference at submodel_{index} and the next token is {next_token}')
     end_time = time.time()
@@ -153,7 +153,7 @@ if __name__ == "__main__":
 
     # start = time.time()
     # print(tokenizer.decode(
-    #     model.generate(**tokenizer("什么是分布式大语言模型？", return_tensors="pt").to("cpu"), num_beams=5, max_new_tokens=100)[
+    #     model.generate(**tokenizer("What is a distributed large language model?", return_tensors="pt").to("cpu"), num_beams=5, max_new_tokens=100)[
     #         0])) # model.generate=> idx
     # end = time.time()
     # print(f"cpu inference time: {end-start}")
@@ -162,15 +162,15 @@ if __name__ == "__main__":
     # model = tp.tensor_parallel(model, ["cuda:0", "cuda:1", "cuda:2", "cuda:3"])
     # start = time.time()
     # print(tokenizer.decode(
-    #     model.generate(**tokenizer("什么是分布式大语言模型？", return_tensors="pt"), num_beams=5, max_new_tokens=100)[
+    #     model.generate(**tokenizer("What is a distributed large language model?", return_tensors="pt"), num_beams=5, max_new_tokens=100)[
     #         0])) # model.generate=> idx
     # end = time.time()
     # print(f"tensor parallel inference time: {end-start}")
 
-    # model = AutoModelForCausalLM.from_pretrained(model_name, device_map='auto') # 以流水线形式分配到gpu卡中
+    # model = AutoModelForCausalLM.from_pretrained(model_name, device_map='auto') # Distributed to GPU cards in pipeline form
     # start = time.time()
     # print(tokenizer.decode(
-    #     model.generate(**tokenizer("什么是分布式大语言模型？", return_tensors="pt"), num_beams=5, max_new_tokens=100)[
+    #     model.generate(**tokenizer("What is a distributed large language model?", return_tensors="pt"), num_beams=5, max_new_tokens=100)[
     #         0])) # model.generate=> idx
     # end = time.time()
     # print(f"pipeline parallel inference time: {end-start}")
@@ -185,7 +185,7 @@ if __name__ == "__main__":
     
 
         
-    input_for_export = tokenizer("什么是分布式大语言模型？", return_tensors="pt")["input_ids"]
+    input_for_export = tokenizer("What is a distributed large language model?", return_tensors="pt")["input_ids"]
 
     # output = run_sequential_inference(input_for_export, model)
     # print(tokenizer.decode(output))

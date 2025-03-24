@@ -189,7 +189,7 @@ if __name__ == "__main__":
                 num_devices = len(devices)
                 monitor.is_monitor_ready.wait()
 
-                # 参数
+                # Parameters
                 ping_latency, bandwidths, TotalMem, AvailMem, flop_speed = monitor.get_monitor_info()
 
                 mem_threshold = .7  # set threshold for memory
@@ -303,7 +303,7 @@ if __name__ == "__main__":
         print("------file_cfg--------")
         print(file_cfg)
 
-        # 修改file_cfg json文件中的ip地址
+        # Modify IP address in file_cfg JSON file
         pathLists = []
         for index, i in enumerate(devices):
             ip = i["ip"]
@@ -311,12 +311,12 @@ if __name__ == "__main__":
 
             if not Quntization_Option:
                 pathList = [str(ip),
-                            "/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_unquantized_res/device{}/module{}/module.zip".format(
+                            "onnx_model__/to_send/bloom560m_unquantized_res/device{}/module{}/module.zip".format(
                                 index, index)]
 
             else:
                 pathList = [str(ip),
-                            "/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_quantized_int8_res/device{}/module{}/module.zip".format(
+                            "onnx_model__/to_send/bloom560m_quantized_int8_res/device{}/module{}/module.zip".format(
                                 index, index)]
             pathLists.append(pathList)
 
@@ -381,7 +381,7 @@ if __name__ == "__main__":
         for t in threads:
             t.join()
             if t.exception:
-                print(f"线程 {t.name} 出现异常: {t.exception}")
+                print(f"Thread {t.name} encountered an exception: {t.exception}")
 
         send.close()
         context.term()
@@ -390,22 +390,22 @@ if __name__ == "__main__":
     ##################################################################################
     ####################### 1. Devices-Server Connection Section #####################
     ##################################################################################
-    last_received_time = time.time()  # 初始化接收时间
-    last_print_time = time.time()  # 初始化打印时间
+    last_received_time = time.time()  # Initialize reception time
+    last_print_time = time.time()  # Initialize print time
 
     while continue_listening:
         current_time = time.time()
-        # 每隔3秒打印一次当前时间
+        # Print current time every 3 seconds
         if current_time - last_print_time >= 3:
             print(f"Current time: {current_time:.2f} seconds since epoch")
-            last_print_time = current_time  # 更新打印时间
+            last_print_time = current_time  # Update print time
         if send.poll(1000):
             print("start listening")
             identifier, action, msg_content = send.recv_multipart()
 
-            # 计算等待时间（从上次接收到消息到现在的时间差）
+            # Calculate wait time (time difference since last message received)
             wait_time = current_time - last_received_time
-            print(f"Wait time: {wait_time:.2f} seconds")  # 打印等待时间，保留两位小数
+            print(f"Wait time: {wait_time:.2f} seconds")  # Print wait time with 2 decimal places
 
             print(f"action: {action.decode()}")
             print(f"msg_content: {msg_content.decode()}")
@@ -519,7 +519,7 @@ if __name__ == "__main__":
             num_devices = len(devices)
             monitor.is_monitor_ready.wait()
 
-            # 参数
+            # Parameters
             ping_latency, bandwidths, TotalMem, AvailMem, flop_speed = monitor.get_monitor_info()
 
 
@@ -632,18 +632,18 @@ if __name__ == "__main__":
     print(file_cfg)
 
 
-    # 修改file_cfg json文件中的ip地址
+    # Modify IP address in file_cfg JSON file
     pathLists = []
     for index ,i in enumerate(devices):
         ip = i["ip"]
         role = i['role']
 
         if not Quntization_Option:
-            pathList = [str(ip), "/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_unquantized_res/device{}/module{}/module.zip".format(index,index)]
+            pathList = [str(ip), "onnx_model__/to_send/bloom560m_unquantized_res/device{}/module{}/module.zip".format(index,index)]
 
         else:
               pathList = [str(ip),
-                    "/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_quantized_int8_res/device{}/module{}/module.zip".format(
+                    "onnx_model__/to_send/bloom560m_quantized_int8_res/device{}/module{}/module.zip".format(
                         index, index)]
         pathLists.append(pathList)
 
@@ -708,7 +708,7 @@ if __name__ == "__main__":
     for t in threads:
         t.join()
         if t.exception:
-            print(f"线程 {t.name} 出现异常: {t.exception}")
+            print(f"Thread {t.name} encountered an exception: {t.exception}")
 
     send.close()
     context.term()

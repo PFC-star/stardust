@@ -360,7 +360,7 @@ class MonitorService : Service(), MonitorActions{
 
     private fun getP2PbandwidthAndLatency() {
         GlobalScope.launch(Dispatchers.IO) {
-            val ipSet = hashSetOf<String>("128.195.41.56", "128.195.41.55")
+            val ipSet = hashSetOf<String>("192.168.1.1", "192.168.1.2")
             val currentIP = getCurrentDeviceIP()
             Log.d(mTAG, "current IP is $currentIP")
             ipSet.remove(currentIP)
@@ -592,7 +592,7 @@ class MonitorService : Service(), MonitorActions{
         }
         serviceScope.launch {
             getNetworkLatency()
-            getBandwidth("128.195.41.51")
+            getBandwidth("192.168.1.1")
         }
     }
 

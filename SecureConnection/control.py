@@ -42,12 +42,12 @@ def kill_process(remote_shell):
 
 
 if __name__ == "__main__":
-    root_ip = "128.195.41.60"
+    root_ip = "192.168.1.30"
 
     communication_layers = [
-        ["128.195.41.53"],
-        ["128.195.41.55"],
-        ["128.195.41.57"]
+        ["192.168.1.40"],
+        ["192.168.1.41"],
+        ["192.168.1.42"]
     ]
 
     ips = communication_layers[0] + communication_layers[1] + communication_layers[2]

@@ -176,7 +176,7 @@ fun ChoseData(){
 
 @Composable
 fun CardRow() {
-    var selectedCardIndex by remember { mutableStateOf(1) } // 初始选中第二张卡片
+    var selectedCardIndex by remember { mutableStateOf(1) } // Initially select the second card
 
     Column (
         modifier = Modifier.fillMaxWidth().padding(top = 10.dp, start = 15.dp, end = 15.dp),
@@ -221,7 +221,7 @@ fun GradientCard(text: String, isSelected: Boolean, gradientColors: List<Color>,
         Modifier.border(
             width = 2.dp,
             color = Color.White,
-            shape = RoundedCornerShape(16.dp) // 保持与 Card 的圆角一致
+            shape = RoundedCornerShape(16.dp) // Maintain consistent corner radius with Card
         )
     } else {
         Modifier
@@ -229,7 +229,7 @@ fun GradientCard(text: String, isSelected: Boolean, gradientColors: List<Color>,
 
     Card(
         shape = RoundedCornerShape(16.dp),
-        elevation = CardDefaults.elevatedCardElevation(defaultElevation = if (isSelected) 20.dp else 4.dp), // 选中时提升阴影效果
+        elevation = CardDefaults.elevatedCardElevation(defaultElevation = if (isSelected) 20.dp else 4.dp), // Increase shadow effect when selected
         modifier = Modifier
             .requiredWidth(if(isSelected) (0.2625*Dim.width).dp else (0.25*Dim.width).dp).
             requiredHeight(if(isSelected) (0.186*Dim.height).dp else (0.1557*Dim.height).dp)
@@ -240,14 +240,14 @@ fun GradientCard(text: String, isSelected: Boolean, gradientColors: List<Color>,
             modifier = Modifier
                 .fillMaxSize()
                 .background(
-                    brush = Brush.linearGradient(gradientColors) // 渐变背景色
+                    brush = Brush.linearGradient(gradientColors) // Gradient background color
                 ),
             contentAlignment = Alignment.Center
         ) {
             Text(
                 text = text,
                 color = Color.Black,
-                fontSize = if (isSelected) 18.sp else 14.sp, // 选中时字体变大
+                fontSize = if (isSelected) 18.sp else 14.sp, // Larger font when selected
                 textAlign = TextAlign.Center
             )
         }
@@ -273,11 +273,11 @@ fun IndicatorDots(totalDots: Int, selectedIndex: Int) {
 
 @Composable
 fun ModelSelection_2(){
-    // 下拉菜单选项列表
+    // Dropdown menu options list
     val options = listOf("Model_1", "Model_2", "Model_3")
-    // 当前选中的选项（默认选择第一个）
+    // Currently selected option (default is the first one)
     var selectedOption by remember { mutableStateOf(options[1]) }
-    // 下拉菜单展开状态
+    // Dropdown menu expanded state
     var expanded by remember { mutableStateOf(false) }
     Card (modifier = Modifier.padding(start = 340.dp)
         .requiredHeight((0.03*Dim.height).dp).requiredWidth((0.3375*Dim.width).dp).clickable { expanded = true },
@@ -293,10 +293,10 @@ fun ModelSelection_2(){
                 tint = Color(0x80939393),
                 modifier = Modifier.size(22.dp).padding(start = 6.dp)
             )
-            // 显示当前选项的文本
+            // Display current option text
             Text(text = selectedOption, color = Color(0xFF939393), fontSize = 12.sp)
 
-            // 下拉菜单
+            // Dropdown menu
             DropdownMenu(
                 expanded = expanded,
                 onDismissRequest = { expanded = false }
@@ -317,14 +317,14 @@ fun ModelSelection_2(){
 
 @Composable
 fun RoundedScrollableVerticalOptionBar() {
-    // 定义7个选项
+    // Define 7 options
     val options = listOf("Chat1", "Chat2", "Chat3", "Chat4", "Chat5", "Chat6", "Chat7")
-    // 用于保存每个选项是否选中的状态（可根据需要调整为单选或多选）
+    // Save state for each option whether it's selected (can be adjusted for single or multiple selection)
     val checkedStates = remember { mutableStateListOf(false, true, false, true, true, false, false) }
-    // 竖直滚动状态
+    // Vertical scroll state
     val scrollState = rememberScrollState()
 
-    // 外部容器：圆角白色背景
+    // External container: Round white background
     Box(
         modifier = Modifier
             .padding(top= 6.dp, start = 10.dp, end = 10.dp, bottom = 15.dp)
@@ -350,9 +350,9 @@ fun RoundedScrollableVerticalOptionBar() {
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        // 左侧文本
+                        // Left text
                         Text(text = option, color = Color.Black)
-                        // 右侧正方形勾选框
+                        // Right square checkbox
                         Box(
                             modifier = Modifier
                                 .size(24.dp)
@@ -364,7 +364,7 @@ fun RoundedScrollableVerticalOptionBar() {
                             }
                         }
                     }
-                    // 分割线（除最后一项外）
+                    // Separator (except for the last item)
                     if (index < options.lastIndex) {
                         Box(
                             modifier = Modifier
@@ -375,7 +375,7 @@ fun RoundedScrollableVerticalOptionBar() {
                     }
                 }
             }
-            // 滑动指示器部分：竖直显示当前滑动位置
+            // Slider indicator part: Vertical display current slider position
             VerticalScrollIndicator(scrollState = scrollState)
         }
     }
@@ -383,13 +383,13 @@ fun RoundedScrollableVerticalOptionBar() {
 
 @Composable
 fun VerticalScrollIndicator(scrollState: androidx.compose.foundation.ScrollState) {
-    // 定义指示器容器宽度
+    // Define indicator container width
     val indicatorWidth = 16.dp
-    // 用于记录指示器容器的高度（以像素为单位）
+    // Use to record indicator container height (in pixels)
     var indicatorHeightPx by remember { mutableStateOf(0f) }
     val density = LocalDensity.current
 
-    // 根据 scrollState 计算滚动进度（0~1）
+    // Calculate scroll progress (0~1) based on scrollState
     val progressFraction = if (scrollState.maxValue > 0)
         scrollState.value.toFloat() / scrollState.maxValue.toFloat() else 0f
 
@@ -402,14 +402,14 @@ fun VerticalScrollIndicator(scrollState: androidx.compose.foundation.ScrollState
             },
         contentAlignment = Alignment.TopEnd
     ) {
-        // 绘制轨道：一条竖直的浅灰色条
+        // Draw track: Vertical light gray bar
         Box(
             modifier = Modifier
                 .width(4.dp)
                 .fillMaxHeight()
                 .background(Color.LightGray)
         )
-        // 滑块：一个深灰色的小条，根据滚动进度垂直偏移
+        // Slider: Small dark gray bar, vertical offset based on scroll progress
         val thumbHeight = 20.dp
         val thumbHeightPx = with(density) { thumbHeight.toPx() }
         val maxOffset = indicatorHeightPx - thumbHeightPx
@@ -427,35 +427,35 @@ fun VerticalScrollIndicator(scrollState: androidx.compose.foundation.ScrollState
 
 @Composable
 fun RingProgressIndicatorWithButton(
-    progress: Float,               // 进度值：0f ~ 1f
-    onButtonClick: () -> Unit,     // 按钮点击回调
+    progress: Float,               // Progress value: 0f ~ 1f
+    onButtonClick: () -> Unit,     // Button click callback
     modifier: Modifier = Modifier,
-    progressColor: Color = Color(0xFF65558F),  // 深色，代表已完成进度
-    trackColor: Color = Color(0xFFE8DEF8),    // 浅色，代表轨道
+    progressColor: Color = Color(0xFF65558F),  // Dark color, represents completed progress
+    trackColor: Color = Color(0xFFE8DEF8),    // Light color, represents track
     strokeWidth: Dp = 6.dp,
-    buttonSize: Dp = 125.dp,        // 内部圆形按钮的尺寸
-    buttonColor: Color = Color(0xFFE9FCFF)  // 按钮背景色
+    buttonSize: Dp = 125.dp,        // Internal circular button size
+    buttonColor: Color = Color(0xFFE9FCFF)  // Button background color
 ) {
-    // 使用 Box 叠加绘制进度条和内部按钮
+    // Use Box to draw progress bar and internal button
     androidx.compose.foundation.layout.Box(
         modifier = modifier,
         contentAlignment = Alignment.Center
     ) {
-        // 绘制完整轨道（底层），使用官方 CircularProgressIndicator
+        // Draw full track (bottom layer), use official CircularProgressIndicator
         CircularProgressIndicator(
             progress = 1f,
             modifier = Modifier.fillMaxSize(),
             color = trackColor,
             strokeWidth = strokeWidth,
         )
-        // 绘制已完成进度（顶层）
+        // Draw completed progress (top layer)
         CircularProgressIndicator(
             progress = 0.27f,
             modifier = Modifier.fillMaxSize(),
             color = progressColor,
             strokeWidth = strokeWidth,
         )
-        // 中间的圆形按钮
+        // Middle circular button
         Surface(
             modifier = Modifier
                 .clickable { onButtonClick() }
@@ -464,11 +464,11 @@ fun RingProgressIndicatorWithButton(
             shape = CircleShape,
             color = buttonColor,
             contentColor = Color.White,
-            // 可选：添加阴影效果
-            // elevation = 4.dp,  // 如果使用 Material2，可指定 elevation；Material3 使用 shadowElevation
+            // Optional: Add shadow effect
+            // elevation = 4.dp,  // If using Material2, specify elevation; Material3 uses shadowElevation
             shadowElevation = 4.dp
         ) {
-            // 按钮内部内容居中显示，可替换为 Icon 等
+            // Button internal content centered display, can be replaced with Icon etc
             androidx.compose.foundation.layout.Box(
                 modifier = Modifier,
                 contentAlignment = Alignment.Center

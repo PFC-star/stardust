@@ -539,10 +539,10 @@ class ModelCard:
                       sorted(os.listdir(model_to_send_directory), key=lambda x: int(re.search(r'\d+', x).group(0)))]
 
         # def sort_key(x):
-        #     match = re.search(r'\d+', x)  # 搜索文件名中的数字
+        #     match = re.search(r'\d+', x)  # Search for numbers in the filename
         #     if match:
-        #         return int(match.group(0))  # 如果找到数字，返回数字
-        #     return float('inf')  # 如果没有数字，返回一个很大的值，以便这些文件排在最后
+        #         return int(match.group(0))  # If numbers are found, return the number
+        #     return float('inf')  # If no number is found, return a very large value, so these files are sorted at the end
         #
         # device_dir = [f"{model_to_send_directory}/{submodule}" for submodule in
         #               sorted(os.listdir(model_to_send_directory), key=sort_key)]

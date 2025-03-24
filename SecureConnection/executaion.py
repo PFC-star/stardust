@@ -5,7 +5,7 @@ import threading
 This file run on the root machine, to start the decentralized communication.
 '''
 
-def remote_shell(ips, username='', passwd: str="kimvjrm", port= 8022):
+def remote_shell(ips, username='', passwd: str="password123", port= 8022):
     """
     Create remote shell for creating tcp connection object that can be referred for multiple times between server and client
     return: a list of spur objects -> list: [ssh_shell1, ssh_shell2, ...]
@@ -28,16 +28,17 @@ def secure_connection(remote_shell, ip, results, command):
 
 if __name__ == "__main__":
 
+    # Example layer structure with generic IP addresses
     # communication_layers = [
-    #     ["192.168.1.12"],
-    #     ["192.168.1.127", "192.168.1.128", "192.168.1.129"],
-    #     ["192.168.1.130"]
+    #     ["192.168.1.10"],
+    #     ["192.168.1.11", "192.168.1.12", "192.168.1.13"],
+    #     ["192.168.1.14"]
     # ]
 
     communication_layers = [
-        ["128.195.41.49"],
-        ["169.234.39.235", "169.234.44.179", "169.234.4.155"],
-        ["169.234.61.40"]
+        ["192.168.1.101"],
+        ["192.168.1.102", "192.168.1.103", "192.168.1.104"],
+        ["192.168.1.105"]
     ]
 
     ips = communication_layers[0] + communication_layers[1] + communication_layers[1] + communication_layers[2]

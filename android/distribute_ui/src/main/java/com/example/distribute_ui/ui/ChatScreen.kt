@@ -214,7 +214,7 @@ fun Messages(
                     Box(
                         modifier = Modifier
                             .background(
-                                color = Color.White, // AI 消息背景颜色
+                                color = Color.White, // AI message background color
                                 shape = RoundedCornerShape(8.dp)
                             )
                             .padding(horizontal = 4.dp, vertical = 4.dp)
@@ -243,15 +243,15 @@ fun Messages(
 
 @Composable
 fun ModelSelection(index: String, num_devices: Int){
-    // 下拉菜单选项列表
+    // Dropdown menu options list
     val options = listOf("Model:bloom560m", "Model:bloom560m-int8","Model:bloom1b1",
         "Model:bloom1b1-int8","Model:bloom1b7", "Model:bloom1b7-int8", "Model:bloom3b",
         "Model:bloom3b-int8", "Model:bloom7b", "Model:bloom7b-int8"
         )
     val str = "Model:$index"
-    // 当前选中的选项（默认选择第一个）
+    // Currently selected option (default is the first one)
     var selectedOption by remember { mutableStateOf(str) }
-    // 下拉菜单展开状态
+    // Dropdown menu expanded state
     var expanded by remember { mutableStateOf(false) }
     Row (modifier = Modifier.fillMaxSize().padding(top = 10.dp), horizontalArrangement = Arrangement.SpaceEvenly){
         Card (modifier = Modifier
@@ -272,10 +272,10 @@ fun ModelSelection(index: String, num_devices: Int){
                         .size(22.dp)
                         .padding(start = 6.dp)
                 )
-                // 显示当前选项的文本
+                // Display current option text
                 Text(text = selectedOption, color = Color.Black, fontSize = 12.sp)
 
-                // 下拉菜单
+                // Dropdown menu
                 DropdownMenu(
                     expanded = expanded,
                     onDismissRequest = { expanded = false }

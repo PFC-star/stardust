@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="ExternalStorageConfigurationManager" enabled="true" />
-  <component name="ProjectRootManager" version="2" project-jdk-name="Remote Python 3.8.20 (sftp://gpu2@10.214.131.229:2200/home/gpu2/anaconda3/envs/stardust/bin/python)" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="Python 3.8" project-jdk-type="Python SDK" />
   <component name="ProjectType">
     <option name="id" value="Android" />
   </component>

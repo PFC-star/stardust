@@ -108,7 +108,7 @@ public class Communication {
     public String[] InputString;
     public volatile Map<Integer, ArrayList<Integer>> InputIds;
     public volatile Map<Integer, byte[]> InputData;
-    public volatile Map<Integer, byte[]> OutputData; //放着header的输出结果，并发送给了worker，worker放在了inputdata里，然后推理，推理结果写在了outputdata里，然后返回到inputIDs
+    public volatile Map<Integer, byte[]> OutputData; // Stores the output results from header, which are sent to worker, worker puts them in inputdata, then performs inference, and writes the inference results to outputdata, then returns to inputIDs
     public volatile Map<Integer, Map<String, ArrayList<byte[]>>> ResidualDataFromDevice;
     public volatile Map<Integer, Map<String , ArrayList<byte[]>>> ResidualDataToDevice;
     public volatile Map<Integer, byte[]> logits;
@@ -213,7 +213,7 @@ public class Communication {
 
     public void prepare() throws Exception {
         long startTime = System.nanoTime();
-        // Communicate with Root Root Server  应该算在准备时间里
+        // Communicate with Root Root Server   should be counted in preparation time
         System.out.println(cfg.root);
         System.out.println(cfg.rootPort);
         Log.d(TAG, "root IP: " + cfg.root +  " ,root port: " + cfg.rootPort);
@@ -278,7 +278,7 @@ public class Communication {
         long sTime = System.nanoTime();
 //        addBytes((byte[]) result[0]);
         long eTime = System.nanoTime();
-        System.out.println("通信OutputData: " + result[0]);
+        System.out.println("Communication OutputData: " + result[0]);
         System.out.println("No." + id + " addBytes Time in seconds: " + (eTime - sTime) / 1000000000.0);
 
         JSONObject resIndex = null;
@@ -318,7 +318,7 @@ public class Communication {
                         System.out.println("sessions.size() header"+sessions.size());
                         int[] to_send_seq_indices = Utils.JsonArray2IntArray(sendIndex.get(sessionIndex[i]).get(0).getJSONArray(String.valueOf(Integer.parseInt(sessionIndex[i]) + 1)));
                         if (i == 0) {
-//                             只使用最后一个 token
+//                              Only use the last token
                             ArrayList<Integer> inputIds = InputIds.get(id);
                             int[] currentToken = new int[]{inputIds.get(inputIds.size() - 1)};
                             result = ((Object[]) runInferenceMasterResidual(sessions.get(i), currentToken, to_send_seq_indices, getResIndices(i)));
@@ -541,9 +541,9 @@ public class Communication {
     }
     class loadModel implements Runnable{
         public void run(){
-            //  设置当前线程的系统优先级为后台（可运行在安卓的小核）
+            //   Set current thread system priority to background (can run on Android's small cores)
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
-            // 加载模型权重和tokenizer
+            //  Load model weights and tokenizer
             long startTime = System.nanoTime();
             Log.d(TAG, "load while inference");
             createSession("/data/user/0/com.example.distribute_ui/files" + "/device/module.onnx");
@@ -611,8 +611,8 @@ public class Communication {
                 loadModel loadthread = new loadModel();
                 Thread thread = new Thread(loadthread);
 
-// 设置线程优先级为后台（小核）
-                thread.setPriority(Thread.MIN_PRIORITY);  // 这个是标准Java线程的优先级
+//  Set thread priority to background (small cores)
+                thread.setPriority(Thread.MIN_PRIORITY);  // This is the priority for standard Java threads
                 thread.start();
 
 
@@ -716,7 +716,7 @@ public class Communication {
                 byte[] msgFrom1 = serverSocket.recv(0);
 
 //                addBytes(msgFrom1);
-                System.out.println("通信 1: " + msgFrom1);
+                System.out.println("Communication 1: " + msgFrom1);
 
                 receivedId = Utils.convertByteArrayToInt(msgFrom1);
                 System.out.println("ReceiveID: " + receivedId);
@@ -734,7 +734,7 @@ public class Communication {
                 byte[] msgFrom = serverSocket.recv(0);
 
 //                addBytes(msgFrom);
-                System.out.println("通信 2: " + msgFrom);
+                System.out.println("Communication 2: " + msgFrom);
                 InputData.put(receivedId, msgFrom);
                 workerThread.join();
                 System.out.println("Received Data");
@@ -767,13 +767,13 @@ public class Communication {
 
             byte[] comefrom_id = clientSocket.recv(0);
 //            addBytes(comefrom_id);
-            System.out.println("通信 3: " + comefrom_id);
+            System.out.println("Communication 3: " + comefrom_id);
             System.out.println(new String(comefrom_id));
             // 通信信息 4
             byte[] msgTo = clientSocket.recv(0);
 //            addBytes(msgTo);
 
-            System.out.println("通信 4: " + msgTo);
+            System.out.println("Communication 4: " + msgTo);
             System.out.println(new String(msgTo));
             System.out.println("Thread id " + this.sample_id);
             System.out.println(receivedId);
