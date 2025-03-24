@@ -2,6 +2,12 @@
 
 This project consists of two main components: a server-side application for running distributed AI models and a mobile app client.
 
+## App Demonstration
+
+Below is a demonstration image of the StarDust mobile application interface:
+
+![StarDust App Interface](image.png)
+
 ## Server-Side Setup
 
 ### Prerequisites
