@@ -16,6 +16,9 @@ import threading
 import platform
 import uuid
 
+# 全局变量
+VERBOSE = False  # 详细日志模式
+
 def get_local_ip():
     """获取本地IP地址"""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -45,23 +48,37 @@ def send_heartbeat(server_ip, port, device_id):
             'status': 'active'
         }
         
+        if VERBOSE:
+            print(f"发送心跳数据: {heartbeat_data}")
+            
         # 发送ZMQ格式的心跳消息
         socket.send_multipart([
             b"HEARTBEAT",
             json.dumps(heartbeat_data).encode('utf-8')
         ])
         
+        if VERBOSE:
+            print(f"心跳数据已发送，等待响应...")
+            
         # 等待响应，设置超时
         socket.setsockopt(zmq.RCVTIMEO, 5000)  # 5秒超时
         try:
             response = socket.recv_multipart()
+            if VERBOSE:
+                print(f"收到心跳响应: {response}")
             print(f"心跳响应: {response[0].decode()}")
             return True
         except zmq.error.Again:
+            if VERBOSE:
+                print("等待心跳响应超时(5秒)")
             print("心跳响应超时")
             return False
         
     except Exception as e:
+        if VERBOSE:
+            print(f"心跳发送过程中出错: {e}")
+            import traceback
+            traceback.print_exc()
         print(f"发送心跳时出错: {e}")
         return False
     finally:
@@ -122,12 +139,18 @@ def register_device(server_ip, port, device_role, model_request=None, device_id=
         device_id = f"{platform.node()}-{uuid.uuid4().hex[:8]}"
     
     try:
+        if VERBOSE:
+            print(f"创建ZMQ连接到 {server_ip}:{port}")
+            
         # 创建ZMQ上下文和套接字
         context = zmq.Context()
         socket = context.socket(zmq.DEALER)
         socket.identity = device_id.encode('utf-8')
         socket.connect(f"tcp://{server_ip}:{port}")
         
+        if VERBOSE:
+            print(f"连接成功，套接字身份: {device_id}")
+            
         # 获取设备信息
         device_info = {
             'ip': virtual_ip or get_local_ip(),
@@ -138,20 +161,41 @@ def register_device(server_ip, port, device_role, model_request=None, device_id=
             'timestamp': time.time()
         }
         
+        if VERBOSE:
+            print(f"准备注册设备，信息: {device_info}")
+        
         # 添加模型请求信息(如果是客户端)
         if device_role == 'client' and model_request:
             device_info['model'] = model_request
         
+        if VERBOSE:
+            print("打包注册消息...")
+            
         # 发送ZMQ格式的注册消息
-        socket.send_multipart([
+        message = [
             b"RegisterIP",
             json.dumps(device_info).encode('utf-8')
-        ])
+        ]
+        
+        if VERBOSE:
+            print(f"发送注册消息: {message}")
+            
+        socket.send_multipart(message)
+        
+        if VERBOSE:
+            print("注册消息已发送，等待响应...")
         
         # 等待响应，设置超时
         socket.setsockopt(zmq.RCVTIMEO, 10000)  # 10秒超时
         try:
+            if VERBOSE:
+                print("准备接收响应...")
+                
             response = socket.recv_multipart()
+            
+            if VERBOSE:
+                print(f"收到服务器响应: {response}")
+                
             action = response[0].decode()
             msg = response[1].decode() if len(response) > 1 else ""
             
@@ -167,13 +211,22 @@ def register_device(server_ip, port, device_role, model_request=None, device_id=
                 return False, None, None
         
         except zmq.error.Again:
+            if VERBOSE:
+                print("等待注册响应超时(10秒)")
+                print("检查服务器是否运行且端口是否正确")
             print("注册响应超时")
             return False, None, None
             
     except Exception as e:
+        if VERBOSE:
+            print(f"注册过程中发生异常: {e}")
+            import traceback
+            traceback.print_exc()
         print(f"注册过程中出错: {e}")
         return False, None, None
     finally:
+        if VERBOSE:
+            print("关闭套接字和上下文")
         if 'socket' in locals():
             socket.close()
         if 'context' in locals():
@@ -189,13 +242,21 @@ def main():
     parser.add_argument('--device-id', help='指定唯一设备ID（用于测试多设备场景）')
     parser.add_argument('--virtual-ip', help='指定虚拟IP地址（用于测试多设备场景）')
     parser.add_argument('--heartbeat-interval', type=int, default=5, help='心跳发送间隔（秒）')
+    parser.add_argument('-v', '--verbose', action='store_true', help='启用详细日志')
     
     args = parser.parse_args()
+    
+    # 设置详细模式
+    global VERBOSE
+    VERBOSE = args.verbose
     
     # 创建停止事件，用于安全终止心跳线程
     heartbeat_stop_event = threading.Event()
     
     try:
+        if VERBOSE:
+            print(f"开始注册设备... 服务器: {args.server}:{args.port}")
+            
         success, device_id, assigned_ip = register_device(
             args.server, args.port, args.role, args.model, args.device_id, args.virtual_ip
         )
