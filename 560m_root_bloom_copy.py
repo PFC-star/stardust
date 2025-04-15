@@ -387,7 +387,7 @@ if __name__ == "__main__":
     status = {}
     threads = []
 
-    lock = threading.Lock()
+ 
     locks = [threading.Lock(), threading.Lock()]
     conditions = [threading.Condition() for i in range(len(devices) + 1)]
 

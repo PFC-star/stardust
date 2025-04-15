@@ -21,7 +21,7 @@ import traceback
 monitor_receive_interval = 10  # set intervals for receiving monitor info from clients
 monitor_port = "34567"  # set server port to receive monitor info
 TIMEOUT =10 # Time to wait for new devices to connect to servers
-MODEL_EXIST_ON_DEVICE = False  # set True if the model exists on the mobile device, will skip model creation and transmission
+MODEL_EXIST_ON_DEVICE = True  # set True if the model exists on the mobile device, will skip model creation and transmission
 runtime_option = False  # set True if the load balance is runtime
 split_size = 2
 device_number =2
@@ -37,13 +37,16 @@ devices_pool_lock = threading.Lock()  # 设备池的线程锁
 # 添加设备池管理类
 class DevicePoolManager:
     def __init__(self):
-        self.lock = threading.Lock()
+        # 使用线程安全的数据结构
         self.device_pool = deque()            # 全部已注册活跃设备池（非工作设备）
         self.working_devices = deque()        # 工作设备池（初始阶段注册的设备）
         self.active_devices = {}              # {task_id: device_list} 当前活跃任务使用的设备
         self.failed_working_devices = deque() # 工作设备故障池
         self.failed_active_devices = deque()  # 活跃设备故障池
         self.task_counter = 0
+        
+        # 使用原子操作来管理设备状态
+        self.device_status = {}  # {device_id: {status, last_heartbeat, info}}
         self.device_heartbeats = {}           # 记录设备最后心跳时间
         self.heartbeat_timeout = 30           # 心跳超时时间(秒)
         self.heartbeat_check_interval = 10    # 心跳检查间隔(秒)
@@ -51,568 +54,145 @@ class DevicePoolManager:
     
     def set_initialization_complete(self):
         """标记初始化阶段已完成，将当前设备池中的设备设为工作设备"""
-        with self.lock:
-            # 将当前所有设备从活跃设备池转移到工作设备池
-            self.working_devices = deque(self.device_pool)
-            # 清空活跃设备池，因为现在所有设备都转为工作设备
-            self.device_pool.clear()
-            self.initialization_complete = True
-            print(f"初始化阶段完成！共有 {len(self.working_devices)} 个工作设备")
-            # 打印所有工作设备的详细信息
-            for i, device in enumerate(self.working_devices):
-                device_id = device.get("device_id", "N/A")
-                ip = device.get("ip", "N/A")
-                role = device.get("role", "N/A")
-                print(f"  工作设备 {i+1}: ID={device_id}, IP={ip}, 角色={role}")
-            
-            # 确保更新所有设备的状态
-            device_pool_manager.printInfo()
+        # 使用原子操作来更新设备池
+        self.working_devices = deque(self.device_pool)
+        self.device_pool.clear()
+        self.initialization_complete = True
+        
+        print(f"初始化阶段完成！共有 {len(self.working_devices)} 个工作设备")
+        # 打印所有工作设备的详细信息
+        for i, device in enumerate(self.working_devices):
+            device_id = device.get("device_id", "N/A")
+            ip = device.get("ip", "N/A")
+            role = device.get("role", "N/A")
+            print(f"  工作设备 {i+1}: ID={device_id}, IP={ip}, 角色={role}")
+        
+        # 更新每个工作设备的状态
+        for device in self.working_devices:
+            device_id = device.get("device_id")
+            if device_id:
+                self.device_status[device_id] = {
+                    "status": "working",
+                    "last_heartbeat": time.time(),
+                    "info": device.copy()
+                }
+        
+        # 确保更新所有设备的状态
+        self.printInfo()
+    
     def register_device(self, device_info):
         """注册新设备到设备池"""
         try:
-            with self.lock:
-                # 先获取设备的标识信息
-                device_id = device_info.get("device_id")
-                ip = device_info.get("ip")
-                
-                if not device_id and not ip:
-                    print("错误: 设备注册没有提供ID或IP地址")
-                    return False
-                    
-                # 初始化心跳时间
-                identifier = device_id or ip
-                self.device_heartbeats[identifier] = time.time()
-                print(f"为设备 {identifier} 初始化心跳时间")
-                
-                # 检查设备应该注册到哪个池
-                if self.initialization_complete:
-                    # 初始化完成后，先检查该设备是否已经在工作设备池中
-                    working_device_exists = False
-                    for device in self.working_devices:
-                        if (device_id and device.get("device_id") == device_id) or (not device_id and device.get("ip") == ip):
-                            # 设备已在工作设备池中，更新其信息
-                            device.update(device_info)
-                            print(f"工作设备已更新: ID={device_id or 'None'}, IP={ip}")
-                            working_device_exists = True
-                            break
-                    
-                    # 如果不在工作设备池中，再检查活跃设备池
-                    if not working_device_exists:
-                        active_device_exists = False
-                        for device in self.device_pool:
-                            if (device_id and device.get("device_id") == device_id) or (not device_id and device.get("ip") == ip):
-                                # 更新设备信息
-                                device.update(device_info)
-                                print(f"活跃设备已更新: ID={device_id or 'None'}, IP={ip}")
-                                active_device_exists = True
-                                break
-                        
-                        # 如果两个池中都不存在，添加为新活跃设备
-                        if not active_device_exists:
-                            self.device_pool.append(device_info)
-                            print(f"运行阶段 - 新设备已注册为活跃设备: ID={device_id or 'None'}, IP={ip}, 角色={device_info.get('role')}")
-                else:
-                    # 初始化阶段，设备应添加到初始设备池（稍后会通过set_initialization_complete转移到工作设备池）
-                    device_exists = False
-                    for device in self.device_pool:
-                        if (device_id and device.get("device_id") == device_id) or (not device_id and device.get("ip") == ip):
-                            # 更新设备信息
-                            device.update(device_info)
-                            print(f"初始设备已更新: ID={device_id or 'None'}, IP={ip}")
-                            device_exists = True
-                            break
-                    
-                    if not device_exists:
-                        # 添加为新初始设备
-                        self.device_pool.append(device_info)
-                        print(f"初始化阶段 - 新设备已注册: ID={device_id or 'None'}, IP={ip}, 角色={device_info.get('role')}")
-                
-                # 最后打印当前设备池状态
-                device_pool_manager.printInfo()
+            device_id = device_info.get("device_id")
+            ip = device_info.get("ip")
+            
+            if not device_id or not ip:
+                print("错误: 设备注册没有提供ID或IP地址")
+                return False
+            
+            current_time = time.time()
+            
+            # 更新设备心跳时间和状态（原子操作）
+            self.device_heartbeats[device_id] = current_time
+            
+            # 检查设备是否已存在
+            device_exists = False
+            device_in_working_pool = False
+            
+            # 检查工作设备池
+            for device in self.working_devices:
+                if device.get("device_id") == device_id:
+                    device.update(device_info)
+                    device_exists = True
+                    device_in_working_pool = True
+                    print(f"设备已在工作设备池中，已更新: ID={device_id}, IP={ip}")
+                    break
+            
+            # 如果不在工作设备池中，检查活跃设备池
+            if not device_exists:
+                for device in self.device_pool:
+                    if device.get("device_id") == device_id:
+                        device.update(device_info)
+                        device_exists = True
+                        print(f"设备已在活跃设备池中，已更新: ID={device_id}, IP={ip}")
+                        break
+            
+            # 如果已存在，更新设备状态
+            if device_exists:
+                status = "working" if device_in_working_pool else "active"
+                self.device_status[device_id] = {
+                    "status": status,
+                    "last_heartbeat": current_time,
+                    "info": device_info.copy()
+                }
+                print(f"更新设备状态: ID={device_id}, 状态={status}")
                 return True
+            
+            # 设备不存在，需要添加
+            if self.initialization_complete:
+                # 初始化完成后，新设备直接添加到工作设备池
+                self.working_devices.append(device_info)
+                status = "working"
+                print(f"运行阶段 - 新设备已注册为工作设备: ID={device_id}, IP={ip}")
+            else:
+                # 初始化阶段，添加到设备池
+                self.device_pool.append(device_info)
+                status = "active"
+                print(f"初始化阶段 - 新设备已注册: ID={device_id}, IP={ip}, 角色={device_info.get('role')}")
+            
+            # 更新设备状态（原子操作）
+            self.device_status[device_id] = {
+                "status": status,
+                "last_heartbeat": current_time,
+                "info": device_info.copy()
+            }
+            
+            # 打印设备池状态
+            self.printInfo()
+            return True
+            
         except Exception as e:
             print(f"设备注册时出错: {e}")
             import traceback
             traceback.print_exc()
             return False
+    
     def update_device_heartbeat(self, device_id):
-        """更新设备心跳时间"""
-        try:
-            if not device_id:
-                print("警告: 尝试更新无效设备ID的心跳")
-                return
-            
-            with self.lock:
-                current_time = time.time()
-                old_time = self.device_heartbeats.get(device_id, 0)
-                self.device_heartbeats[device_id] = current_time
-                
-                # 记录时间差，用于监控
-                if old_time > 0:
-                    time_diff = current_time - old_time
-                    if time_diff > self.heartbeat_timeout / 2:
-                        print(f"警告: 设备 {device_id} 心跳间隔较长: {time_diff:.1f}秒")
-                    else:
-                        print(f"设备 {device_id} 心跳更新: {time_diff:.1f}秒前")
-                else:
-                    print(f"设备 {device_id} 首次心跳记录")
-        except Exception as e:
-            print(f"更新设备心跳时出错: {e}")
-    
-    def check_device_heartbeats(self):
-        """检查所有设备的心跳状态"""
-        try:
-            current_time = time.time()
-            failed_working_devices = []
-            failed_active_devices = []
-            
-            # 收集故障设备，避免长时间持有锁
-            with self.lock:
-                # 检查工作设备的心跳
-                for device in list(self.working_devices):
-                    device_id = device.get("device_id") or device.get("ip")
-                    if not device_id:
-                        print(f"警告: 工作设备没有ID或IP，无法检查心跳: {device}")
-                        continue
-                        
-                    last_heartbeat = self.device_heartbeats.get(device_id, 0)
-                    
-                    # 忽略心跳时间为0的设备，这可能是新注册的设备
-                    if last_heartbeat == 0:
-                        print(f"设备 {device_id} 尚未发送心跳，更新为当前时间")
-                        self.device_heartbeats[device_id] = current_time
-                        continue
-                    
-                    heartbeat_age = current_time - last_heartbeat
-                    if heartbeat_age > self.heartbeat_timeout:
-                        print(f"工作设备 {device_id} 心跳超时 ({heartbeat_age:.1f}秒)，可能已故障")
-                        # 创建设备副本以避免修改原始引用
-                        failed_working_devices.append(device.copy())
-                    else:
-                        print(f"工作设备 {device_id} 心跳正常，最后心跳: {heartbeat_age:.1f}秒前")
-                
-                # 检查活跃设备的心跳
-                for device in list(self.device_pool):
-                    device_id = device.get("device_id") or device.get("ip")
-                    if not device_id:
-                        print(f"警告: 活跃设备没有ID或IP，无法检查心跳: {device}")
-                        continue
-                        
-                    last_heartbeat = self.device_heartbeats.get(device_id, 0)
-                    
-                    # 忽略心跳时间为0的设备，这可能是新注册的设备
-                    if last_heartbeat == 0:
-                        print(f"设备 {device_id} 尚未发送心跳，更新为当前时间")
-                        self.device_heartbeats[device_id] = current_time
-                        continue
-                    
-                    heartbeat_age = current_time - last_heartbeat
-                    if heartbeat_age > self.heartbeat_timeout:
-                        print(f"活跃设备 {device_id} 心跳超时 ({heartbeat_age:.1f}秒)，可能已故障")
-                        # 创建设备副本以避免修改原始引用
-                        failed_active_devices.append(device.copy())
-                    else:
-                        print(f"活跃设备 {device_id} 心跳正常，最后心跳: {heartbeat_age:.1f}秒前")
-            
-            # 释放锁后处理故障设备
-            failures_count = 0
-            # 处理工作设备故障
-            for device in failed_working_devices:
-                print(f"准备处理工作设备故障: {device.get('device_id') or device.get('ip')}")
-                self.handle_working_device_failure(device)
-                failures_count += 1
-            
-            # 处理活跃设备故障
-            for device in failed_active_devices:
-                print(f"准备处理活跃设备故障: {device.get('device_id') or device.get('ip')}")
-                self.handle_active_device_failure(device)
-                failures_count += 1
-            
-            return failures_count
-        except Exception as e:
-            print(f"检查设备心跳时出错: {e}")
-            import traceback
-            traceback.print_exc()
-            return 0
-    
-    def handle_working_device_failure(self, device):
-        """处理工作设备故障"""
-        device_id = device.get("device_id") or device.get("ip")
+        """更新设备心跳时间，使用原子操作"""
         if not device_id:
-            print("警告: 设备没有ID或IP，无法处理故障")
-            return
-            
-        try:
-            print(f"开始处理工作设备故障: {device_id}")
-            
-            # 操作1: 从工作设备池中查找并移除设备
-            device_to_remove = None
-            with self.lock:
-                device_found = False
-                for d in list(self.working_devices):
-                    d_id = d.get("device_id")
-                    d_ip = d.get("ip")
-                    if (device_id == d_id) or (device_id == d_ip):
-                        device_found = True
-                        device_to_remove = d  # 保存找到的设备引用
-                        self.working_devices.remove(d)
-                        print(f"工作设备 {device_id} 已从工作设备池中移除")
-                        break
-                
-                if not device_found:
-                    print(f"警告: 工作设备 {device_id} 不在设备池中，可能已被移除")
-                    return
-            
-            if not device_to_remove:
-                return
-                
-            # 操作2: 从活跃任务中移除设备
-            with self.lock:
-                tasks_to_update = []
-                for task_id, devices in self.active_devices.items():
-                    device_index = None
-                    for i, d in enumerate(devices):
-                        d_id = d.get("device_id")
-                        d_ip = d.get("ip")
-                        if (device_id == d_id) or (device_id == d_ip):
-                            device_index = i
-                            break
-                    
-                    if device_index is not None:
-                        tasks_to_update.append((task_id, device_index))
-                        
-                # 执行实际的移除操作
-                for task_id, device_index in tasks_to_update:
-                    devices = self.active_devices[task_id]
-                    devices.pop(device_index)
-                    print(f"工作设备 {device_id} 已从任务 {task_id} 中移除")
-                    
-                    if not devices:  # 如果任务没有设备了，删除该任务
-                        del self.active_devices[task_id]
-                        print(f"任务 {task_id} 已删除，因为没有可用设备")
-            
-            # 操作3: 添加到故障池和清理心跳记录
-            with self.lock:
-                # 使用完整的原始设备信息
-                device_to_remove["failure_time"] = time.time()
-                device_to_remove["failure_reason"] = "heartbeat_timeout"
-                device_to_remove["device_type"] = "working"
-                self.failed_working_devices.append(device_to_remove)
-                print(f"工作设备 {device_id} 已添加到工作设备故障池")
-                
-                # 从心跳记录中移除
-                if device_id in self.device_heartbeats:
-                    del self.device_heartbeats[device_id]
-                    print(f"已清除设备 {device_id} 的心跳记录")
-                    
-        except Exception as e:
-            print(f"处理工作设备故障时出错: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    def handle_active_device_failure(self, device):
-        """处理活跃设备故障"""
-        device_id = device.get("device_id") or device.get("ip")
-        if not device_id:
-            print("警告: 设备没有ID或IP，无法处理故障")
-            return
-            
-        try:
-            print(f"开始处理活跃设备故障: {device_id}")
-            
-            # 操作1: 从活跃设备池中查找并移除设备
-            device_to_remove = None
-            with self.lock:
-                device_found = False
-                for d in list(self.device_pool):
-                    d_id = d.get("device_id")
-                    d_ip = d.get("ip")
-                    if (device_id == d_id) or (device_id == d_ip):
-                        device_found = True
-                        device_to_remove = d  # 保存找到的设备引用
-                        self.device_pool.remove(d)
-                        print(f"活跃设备 {device_id} 已从活跃设备池中移除")
-                        break
-                
-                if not device_found:
-                    print(f"警告: 活跃设备 {device_id} 不在设备池中，可能已被移除")
-                    return
-            
-            if not device_to_remove:
-                return
-                
-            # 操作2: 添加到故障池和清理心跳记录
-            with self.lock:
-                # 使用完整的原始设备信息
-                device_to_remove["failure_time"] = time.time()
-                device_to_remove["failure_reason"] = "heartbeat_timeout"
-                device_to_remove["device_type"] = "active"
-                self.failed_active_devices.append(device_to_remove)
-                print(f"活跃设备 {device_id} 已添加到活跃设备故障池")
-                
-                # 从心跳记录中移除
-                if device_id in self.device_heartbeats:
-                    del self.device_heartbeats[device_id]
-                    print(f"已清除设备 {device_id} 的心跳记录")
-                    
-        except Exception as e:
-            print(f"处理活跃设备故障时出错: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    def handle_device_failure(self, device):
-        """处理设备故障（兼容旧代码）"""
-        device_id = device.get("device_id") or device.get("ip")
-        if not device_id:
-            print("警告: 设备没有ID或IP，无法处理故障")
-            return
-            
-        # 检查设备是工作设备还是活跃设备
-        is_working = False
-        is_active = False
+            print("警告: 尝试更新无效设备ID的心跳")
+            return False
         
-        with self.lock:
-            # 使用ID或IP进行比较，而不是直接比较对象
-            for d in self.working_devices:
-                d_id = d.get("device_id")
-                d_ip = d.get("ip")
-                if (device_id == d_id) or (device_id == d_ip):
-                    is_working = True
-                    break
-                    
-            if not is_working:
-                for d in self.device_pool:
-                    d_id = d.get("device_id")
-                    d_ip = d.get("ip")
-                    if (device_id == d_id) or (device_id == d_ip):
-                        is_active = True
-                        break
+        current_time = time.time()
+        old_time = self.device_heartbeats.get(device_id, 0)
         
-        if is_working:
-            self.handle_working_device_failure(device)
-        elif is_active:
-            self.handle_active_device_failure(device)
+        # 使用原子操作更新心跳时间
+        self.device_heartbeats[device_id] = current_time
+        
+        # 如果设备状态存在，更新状态中的心跳时间
+        if device_id in self.device_status:
+            self.device_status[device_id]["last_heartbeat"] = current_time
+        
+        # 记录心跳时间差，用于监控
+        if old_time > 0:
+            time_diff = current_time - old_time
+            if time_diff > self.heartbeat_timeout / 2:
+                print(f"警告: 设备 {device_id} 心跳间隔较长: {time_diff:.1f}秒")
+            else:
+                print(f"设备 {device_id} 心跳更新: {time_diff:.1f}秒前")
         else:
-            print(f"警告: 设备 {device_id} 不在任何设备池中，无法处理故障")
+            print(f"设备 {device_id} 首次心跳记录")
+        
+        return True
     
-    def get_failed_devices(self):
-        """获取所有故障设备列表（包括工作设备和活跃设备）"""
-        with self.lock:
-            return list(self.failed_working_devices) + list(self.failed_active_devices)
-    
-    def get_failed_working_devices(self):
-        """获取工作设备故障列表"""
-        with self.lock:
-            return list(self.failed_working_devices)
-    
-    def get_failed_active_devices(self):
-        """获取活跃设备故障列表"""
-        with self.lock:
-            return list(self.failed_active_devices)
-    
-    def get_device_status(self, device_id):
-        """获取设备状态"""
-        with self.lock:
-            # 检查是否在工作设备故障池中
-            for device in self.failed_working_devices:
-                if (device.get("device_id") == device_id) or (device["ip"] == device_id):
-                    return {
-                        "status": "failed_working",
-                        "failure_time": device.get("failure_time"),
-                        "failure_reason": device.get("failure_reason")
-                    }
-            
-            # 检查是否在活跃设备故障池中
-            for device in self.failed_active_devices:
-                if (device.get("device_id") == device_id) or (device["ip"] == device_id):
-                    return {
-                        "status": "failed_active",
-                        "failure_time": device.get("failure_time"),
-                        "failure_reason": device.get("failure_reason")
-                    }
-            
-            # 检查是否在工作设备池中
-            for device in self.working_devices:
-                if (device.get("device_id") == device_id) or (device["ip"] == device_id):
-                    last_heartbeat = self.device_heartbeats.get(device_id, 0)
-                    return {
-                        "status": "working",
-                        "last_heartbeat": last_heartbeat,
-                        "role": device.get("role")
-                    }
-            
-            # 检查是否在活跃设备池中
-            for device in self.device_pool:
-                if (device.get("device_id") == device_id) or (device["ip"] == device_id):
-                    last_heartbeat = self.device_heartbeats.get(device_id, 0)
-                    return {
-                        "status": "active",
-                        "last_heartbeat": last_heartbeat,
-                        "role": device.get("role")
-                    }
-            
-            return {"status": "unknown"}
-
-    def check_device_pool_integrity(self):
-        """检查设备池中是否有重复项"""
-        with self.lock:
-            device_ids = set()
-            ip_without_id = set()
-            duplicates = []
-            
-            for device in self.device_pool:
-                if "device_id" in device:
-                    if device["device_id"] in device_ids:
-                        duplicates.append(f"Duplicate device_id: {device['device_id']}")
-                    device_ids.add(device["device_id"])
-                else:
-                    if device["ip"] in ip_without_id:
-                        duplicates.append(f"Duplicate IP without device_id: {device['ip']}")
-                    ip_without_id.add(device["ip"])
-            
-            if duplicates:
-                print("WARNING: Found duplicates in device pool:")
-                for dup in duplicates:
-                    print(f"  - {dup}")
-                return False
-            return True
-    
-    def get_all_devices(self):
-        """获取所有已注册设备"""
-        with self.lock:
-            return list(self.device_pool)
-    
-    def get_working_devices(self):
-        """获取所有工作设备"""
-        with self.lock:
-            return list(self.working_devices)
-    
-    def get_device_count(self):
-        """获取设备总数"""
-        with self.lock:
-            return len(self.device_pool)
-    
-    def get_working_device_count(self):
-        """获取工作设备总数"""
-        with self.lock:
-            return len(self.working_devices)
-    
-    def get_active_task_count(self):
-        """获取活跃任务数量"""
-        with self.lock:
-            return len(self.active_devices)
-
-    def get_main_thread_device_count(self):
-        """获取主线程中的设备数量（非活跃设备）"""
-        with self.lock:
-            active_device_count = sum(len(devices) for devices in self.active_devices.values())
-            return len(self.working_devices) - active_device_count
-    
-    def get_available_devices(self, required_count=None, working_only=False):
-        """获取可用的设备列表
-           working_only=True 时只返回工作设备池中的设备
-        """
-        with self.lock:
-            # 找出未被分配给活跃任务的设备
-            busy_devices = set()
-            for devices in self.active_devices.values():
-                for device in devices:
-                    # 使用设备ID或IP作为标识
-                    if "device_id" in device:
-                        busy_devices.add(device["device_id"])
-                    else:
-                        busy_devices.add(device["ip"])
-            
-            # 选择设备池
-            device_pool = self.working_devices if working_only else self.device_pool
-            
-            available = []
-            for d in device_pool:
-                if "device_id" in d and d["device_id"] in busy_devices:
-                    continue
-                if "device_id" not in d and d["ip"] in busy_devices:
-                    continue
-                available.append(d)
-            
-            if required_count is not None and len(available) < required_count:
-                print(f"警告: 只有 {len(available)} 个可用设备, 但需要 {required_count} 个")
-                return None
-            
-            return available
-    
-    def allocate_devices_for_task(self, device_count, task_id=None, working_only=True):
-        """为任务分配设备, working_only=True 时只从工作设备池中分配"""
-        with self.lock:
-            available = self.get_available_devices(working_only=working_only)
-            
-            if len(available) < device_count:
-                print(f"没有足够的可用设备。需要: {device_count}, 可用: {len(available)}")
-                return None
-            
-            # 分配设备
-            allocated = []
-            header_allocated = False
-            
-            # 优先分配header设备
-            for device in available:
-                if not header_allocated and device["role"] == "header":
-                    allocated.append(device)
-                    header_allocated = True
-                    if len(allocated) == device_count:
-                        break
-            
-            # 分配其他设备
-            for device in available:
-                if device not in allocated:
-                    allocated.append(device)
-                    if len(allocated) == device_count:
-                        break
-            
-            # 如果没有指定task_id，创建新的
-            if task_id is None:
-                self.task_counter += 1
-                task_id = f"task_{self.task_counter}"
-            
-            # 记录任务使用的设备
-            self.active_devices[task_id] = allocated
-            
-            return task_id, allocated
-    
-    def release_task_devices(self, task_id):
-        """释放任务使用的设备"""
-        with self.lock:
-            if task_id in self.active_devices:
-                del self.active_devices[task_id]
-                print(f"Released devices for task {task_id}")
-                return True
-            return False
-    
-    def get_task_devices(self, task_id):
-        """获取指定任务的设备列表"""
-        with self.lock:
-            return self.active_devices.get(task_id, [])
-
-    def is_working_device(self, device):
-        """检查设备是否为工作设备"""
-        with self.lock:
-            device_id = device.get("device_id")
-            ip = device.get("ip")
-            
-            for d in self.working_devices:
-                d_id = d.get("device_id")
-                d_ip = d.get("ip")
-                
-                # 如果有设备ID，使用设备ID比较；否则使用IP比较
-                if (device_id and d_id and device_id == d_id) or (ip and d_ip and ip == d_ip):
-                    return True
-            
-            return False
     def printInfo(self):
-        print("\n初始设备池状态:")
+        print("\n设备池状态:")
         print(f"工作设备: {len(self.working_devices)}个")
         print(f"活跃设备: {len(self.device_pool)}个")
         print(f"工作设备故障: {len(self.failed_working_devices)}个") 
         print(f"活跃设备故障: {len(self.failed_active_devices)}个")
+        print(f"初始化状态: {'已完成' if self.initialization_complete else '未完成'}")
+
 # 创建设备池管理器实例
 device_pool_manager = DevicePoolManager()
 
@@ -628,6 +208,7 @@ def heartbeat_check_thread():
     while True:
         try:
             print(f"\n正在检查所有设备的心跳状态... 当前时间: {time.time():.2f}")
+            current_time = time.time()
             
             # 获取故障前的设备状态
             before_count = {
@@ -637,8 +218,57 @@ def heartbeat_check_thread():
                 'failed_active': len(device_pool_manager.failed_active_devices)
             }
             
-            # 执行心跳检查
-            failures_detected = device_pool_manager.check_device_heartbeats()
+            # 不持有锁的情况下收集超时设备
+            failed_devices = []
+            
+            # 检查所有设备的心跳状态
+            for device_id, last_heartbeat in list(device_pool_manager.device_heartbeats.items()):
+                heartbeat_age = current_time - last_heartbeat
+                
+                # 如果设备心跳超时，标记为失败
+                if heartbeat_age > device_pool_manager.heartbeat_timeout:
+                    # 确定设备在哪个池
+                    device_status = device_pool_manager.device_status.get(device_id, {}).get("status", "unknown")
+                    device_info = device_pool_manager.device_status.get(device_id, {}).get("info", {})
+                    
+                    print(f"设备 {device_id} 心跳超时 ({heartbeat_age:.1f}秒)，当前状态: {device_status}")
+                    
+                    if device_info:
+                        # 添加失败信息
+                        device_info["failure_time"] = current_time
+                        device_info["failure_reason"] = f"心跳超时 ({heartbeat_age:.1f}秒)"
+                        failed_devices.append((device_id, device_status, device_info.copy()))
+                else:
+                    device_status = device_pool_manager.device_status.get(device_id, {}).get("status", "unknown")
+                    print(f"设备 {device_id} 心跳正常 ({heartbeat_age:.1f}秒)，当前状态: {device_status}")
+            
+            # 处理超时设备，使用原子操作
+            failures_count = 0
+            
+            for device_id, status, device_info in failed_devices:
+                # 根据设备状态处理故障
+                if status == "working":
+                    # 从工作设备池中移除
+                    for i, device in enumerate(device_pool_manager.working_devices):
+                        if device.get("device_id") == device_id:
+                            device_pool_manager.working_devices.remove(device)
+                            device_pool_manager.failed_working_devices.append(device_info)
+                            print(f"工作设备 {device_id} 已移至故障池")
+                            failures_count += 1
+                            break
+                elif status == "active":
+                    # 从活跃设备池中移除
+                    for i, device in enumerate(device_pool_manager.device_pool):
+                        if device.get("device_id") == device_id:
+                            device_pool_manager.device_pool.remove(device)
+                            device_pool_manager.failed_active_devices.append(device_info)
+                            print(f"活跃设备 {device_id} 已移至故障池")
+                            failures_count += 1
+                            break
+                
+                # 更新设备状态
+                if device_id in device_pool_manager.device_status:
+                    device_pool_manager.device_status[device_id]["status"] = f"failed_{status}"
             
             # 获取故障后的设备状态
             after_count = {
@@ -656,48 +286,27 @@ def heartbeat_check_thread():
                 before_count['failed_active'] != after_count['failed_active']
             )
             
-            # 确定是否需要打印详细信息
-            if failures_detected > 0 or status_changed:
+            # 如果有状态变化，打印详细信息
+            if failures_count > 0 or status_changed:
                 print("\n⚠️ 设备池状态发生变化:")
                 print(f"  工作设备: {before_count['working']} -> {after_count['working']} 个")
                 print(f"  活跃设备: {before_count['active']} -> {after_count['active']} 个")
                 print(f"  工作设备故障: {before_count['failed_working']} -> {after_count['failed_working']} 个") 
                 print(f"  活跃设备故障: {before_count['failed_active']} -> {after_count['failed_active']} 个")
                 
-                if failures_detected > 0:
-                    print(f"\n本次检测到 {failures_detected} 个新故障设备")
-                
-                # 打印详细的故障设备信息
-                failed_devices = device_pool_manager.get_failed_devices()
-                if failed_devices:
-                    print("\n故障设备列表:")
-                    for i, device in enumerate(failed_devices):
-                        device_id = device.get("device_id", "N/A")
-                        ip = device.get("ip", "N/A")
-                        role = device.get("role", "N/A")
-                        failure_time = device.get("failure_time", "N/A")
-                        if isinstance(failure_time, (int, float)):
-                            failure_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(failure_time))
-                        else:
-                            failure_time_str = str(failure_time)
-                        
-                        failure_reason = device.get("failure_reason", "N/A")
-                        device_type = device.get("device_type", "unknown")
-                        
-                        print(f"  {i+1}. ID: {device_id}, IP: {ip}, 角色: {role}")
-                        print(f"     类型: {device_type}, 故障时间: {failure_time_str}")
-                        print(f"     故障原因: {failure_reason}")
+                if failures_count > 0:
+                    print(f"\n本次检测到 {failures_count} 个新故障设备")
                 
                 consecutive_empty_checks = 0
             else:
                 consecutive_empty_checks += 1
-                if consecutive_empty_checks <= 2:  # 只在连续空检查次数较少时打印常规状态
+                if consecutive_empty_checks <= 2:
                     print("\n设备池状态正常 (无变化):")
                     device_pool_manager.printInfo()
                 else:
                     print(f"设备池状态正常 (已连续 {consecutive_empty_checks} 次无变化)")
-                    
-            # 每5次（约50秒）无变化检查后，重新完整打印一次状态以保持信息更新
+            
+            # 每5次无变化检查后，重新打印状态
             if consecutive_empty_checks > 0 and consecutive_empty_checks % 5 == 0:
                 print("\n定期状态更新:")
                 device_pool_manager.printInfo()
@@ -716,11 +325,24 @@ def handle_device_registration_and_heartbeat(socket, port):
     
     try:
         print(f"设备注册和心跳服务已启动，监听端口 {port}")
+        # 配置套接字超时，防止阻塞操作
+        socket.setsockopt(zmq.RCVTIMEO, 1000)  # 1秒接收超时
+        socket.setsockopt(zmq.SNDTIMEO, 1000)  # 1秒发送超时
         
         while True:
             try:
+                # 检查socket是否已关闭
+                if socket.closed:
+                    print("Socket已关闭，退出注册和心跳服务")
+                    break
+                    
                 # 接收消息
-                message = socket.recv_multipart()
+                try:
+                    message = socket.recv_multipart()
+                except zmq.error.Again:
+                    # 接收超时，继续循环
+                    continue
+                
                 if not message or len(message) < 2:
                     print("警告: 收到空消息或不完整的消息")
                     continue
@@ -728,6 +350,18 @@ def handle_device_registration_and_heartbeat(socket, port):
                 # 解析消息
                 identifier = message[0]  # 设备标识符
                 action = message[1].decode()  # 动作类型
+                
+                # 安全地显示标识符，避免解码错误
+                if isinstance(identifier, bytes):
+                    try:
+                        id_str = identifier.decode('utf-8')
+                    except UnicodeDecodeError:
+                        # 如果无法解码为UTF-8，则使用十六进制表示
+                        id_str = identifier.hex()
+                else:
+                    id_str = str(identifier)
+                
+                print(f"收到消息: 标识符={id_str}, 动作={action}")
                 
                 # 根据消息类型获取数据
                 if len(message) > 2:
@@ -739,16 +373,14 @@ def handle_device_registration_and_heartbeat(socket, port):
                 else:
                     data = {}
                 
-                print(f"收到消息: 标识符={identifier.decode() if isinstance(identifier, bytes) else identifier}, 动作={action}")
-                
-                # 处理不同类型的消息
+                # 根据动作类型处理消息
                 if action == "RegisterIP":
                     # 处理设备注册
-                    device_id = data.get("device_id")
                     ip = data.get("ip")
                     role = data.get("role")
+                    model_request = data.get("model", None)  # 只有header设备会发送model
                     
-                    if not all([device_id, ip, role]):
+                    if not all([ip, role]):
                         print(f"警告: 设备注册信息不完整: {data}")
                         socket.send_multipart([
                             identifier,
@@ -757,14 +389,16 @@ def handle_device_registration_and_heartbeat(socket, port):
                         ])
                         continue
                     
-                    # 添加设备到设备池
+                    # 创建设备信息 - 使用唯一标识符的十六进制表示作为设备ID
+                    device_id = identifier.hex() if isinstance(identifier, bytes) else str(identifier)
+                    
                     device = {
                         "device_id": device_id,
                         "ip": ip,
                         "role": role,
-                        "device_type": data.get("device_type", "unknown"),
-                        "os": data.get("os", "unknown"),
-                        "model": data.get("model", None)
+                        "device_type": "mobile",  # 默认设备类型
+                        "os": "android",  # 默认操作系统
+                        "model": model_request  # 保存请求的模型
                     }
                     
                     print(f"处理设备注册: ID={device_id}, IP={ip}, 角色={role}")
@@ -772,54 +406,56 @@ def handle_device_registration_and_heartbeat(socket, port):
                     # 添加到ip_graph_requested以便后续发送模型
                     if identifier not in ip_graph_requested:
                         ip_graph_requested.append(identifier)
-                        print(f"将设备标识符 {identifier} 添加到ip_graph_requested")
+                        print(f"将设备标识符添加到ip_graph_requested")
                     
-                    with device_pool_manager.lock:
-                        # 检查设备是否已存在
-                        for existing_device in device_pool_manager.device_pool:
-                            if (existing_device.get("device_id") == device_id or 
-                                existing_device.get("ip") == ip):
-                                print(f"设备已存在: {device_id} ({ip})")
-                                socket.send_multipart([
-                                    identifier,
-                                    b"REGISTRATION_SUCCESSFUL",
-                                    b"Device already registered"
-                                ])
-                                break
+                    # 注册设备
+                    success = device_pool_manager.register_device(device)
+                    
+                    # 发送响应消息
+                    try:
+                        if success:
+                            # 发送是否需要监控的信号
+                            need_monitor = b"True" if not MODEL_EXIST_ON_DEVICE else b"False"
+                            socket.send(need_monitor)
                         else:
-                            # 设备不存在，添加到设备池
-                            device_pool_manager.device_pool.append(device)
-                            print(f"新设备注册成功: {device_id} ({ip})")
-                            socket.send_multipart([
-                                identifier,
-                                b"REGISTRATION_SUCCESSFUL",
-                                b"Device registered successfully"
-                            ])
+                            socket.send(b"False")
+                    except zmq.error.ZMQError as e:
+                        print(f"发送注册响应时出错: {e}")
                 
-                elif action == "HEARTBEAT":
-                    # 处理心跳
-                    device_id = data.get("device_id")
+                elif action == "HEARTBEAT" or action == "HeartDetect":
+                    # 处理心跳消息 - 使用唯一标识符的十六进制表示作为设备ID
+                    device_id = identifier.hex() if isinstance(identifier, bytes) else str(identifier)
+                    
                     if not device_id:
                         print("警告: 心跳消息缺少设备ID")
+                        socket.send(b"HEARTBEAT_FAILED")
                         continue
                     
-                    # 更新设备心跳时间
-                    device_pool_manager.update_device_heartbeat(device_id)
-                    socket.send_multipart([
-                        identifier,
-                        b"HEARTBEAT_RECEIVED"
-                    ])
+                    # 更新心跳时间
+                    success = device_pool_manager.update_device_heartbeat(device_id)
+                    
+                    # 发送响应
+                    try:
+                        if success:
+                            socket.send(b"HEARTBEAT_RECEIVED")
+                        else:
+                            socket.send(b"HEARTBEAT_FAILED")
+                    except zmq.error.ZMQError as e:
+                        print(f"发送心跳响应时出错: {e}")
                 
                 else:
                     print(f"未知的消息类型: {action}")
-                    socket.send_multipart([
-                        identifier,
-                        b"UNKNOWN_ACTION",
-                        b"Unknown action type"
-                    ])
+                    try:
+                        pass
+                        # socket.send(b"UNKNOWN_ACTION")
+                    except zmq.error.ZMQError as e:
+                        print(f"发送未知动作响应时出错: {e}")
                     
-            except zmq.error.Again:
-                # 超时，继续循环
+            except zmq.error.ZMQError as e:
+                print(f"ZMQ错误: {e}")
+                if socket.closed:
+                    print("Socket已关闭，退出注册和心跳服务")
+                    break
                 continue
             except Exception as e:
                 print(f"处理消息时出错: {e}")
@@ -831,11 +467,14 @@ def handle_device_registration_and_heartbeat(socket, port):
         print(f"设备注册和心跳服务出错: {e}")
         import traceback
         traceback.print_exc()
+    finally:
+        print("设备注册和心跳服务已停止")
 
 def main():
     """主函数，包含设备注册、模型分割和发送功能"""
     global devices        # 引用全局变量
     global ip_graph_requested
+    global ip_graph  # 添加全局声明
     
     try:
         start = time.time()
@@ -846,6 +485,10 @@ def main():
         registration_socket = context.socket(zmq.ROUTER)
         registration_socket.bind(f"tcp://*:{PORT}")
         
+        # 设置注册套接字的超时，只用于注册和心跳
+        registration_socket.setsockopt(zmq.RCVTIMEO, 1000)  # 1秒接收超时
+        registration_socket.setsockopt(zmq.SNDTIMEO, 1000)  # 1秒发送超时
+        
         # 设置默认模型，防止未定义错误
         requested_model = "bloom560m-int8"  # 默认模型
         
@@ -855,6 +498,7 @@ def main():
         # 初始化全局设备集合
         devices = deque()
         ip_graph_requested = []  # 存储所有请求设备的IP地址
+        ip_graph = []  # 初始化ip_graph列表
         
         print("==== 分布式推理系统启动 ====")
         print(f"等待设备注册，初始化阶段超时: {TIMEOUT}秒")
@@ -878,58 +522,59 @@ def main():
         # 等待初始化阶段完成
         print("等待初始化阶段完成...")
         initialization_complete = False
-        initialization_start_time = time.time()
+        last_registration_time = time.time()  # 记录最后设备注册时间
+        device_count = 0  # 记录当前设备数量
         
-        while not initialization_complete and time.time() - initialization_start_time < TIMEOUT:
-            # 检查是否有设备注册
-            with device_pool_manager.lock:
-                if len(device_pool_manager.device_pool) > 0:
-                    # 检查是否超时
-                    if time.time() - initialization_start_time >= TIMEOUT:
-                        # 初始化阶段结束，将当前设备设为工作设备
-                        device_pool_manager.set_initialization_complete()
-                        initialization_complete = True
-                        
-                        # 将设备添加到兼容旧代码的设备集合
-                        for device in device_pool_manager.working_devices:
-                            device_entry = {
-                                "ip": device.get("ip"),
-                                "role": device.get("role"),
-                                "device_id": device.get("device_id")
-                            }
-                            if device_entry["role"] == "header":
-                                devices.appendleft(device_entry)
-                            else:
-                                devices.append(device_entry)
-                        print(f"初始化完成，收集到 {len(device_pool_manager.working_devices)} 个工作设备")
+        # 在主循环中使用超时检查，避免永久阻塞
+        while not initialization_complete:
+            current_device_count = 0
             
-            # 检查是否已经超时
-            if not initialization_complete and time.time() - initialization_start_time >= TIMEOUT:
-                print(f"初始化阶段超时: {TIMEOUT}秒已到")
-                with device_pool_manager.lock:
-                    device_pool_manager.set_initialization_complete()
-                    
-                    # 将设备添加到兼容旧代码的设备集合
-                    for device in device_pool_manager.working_devices:
-                        device_entry = {
-                            "ip": device.get("ip"),
-                            "role": device.get("role"),
-                            "device_id": device.get("device_id")
-                        }
-                        if device_entry["role"] == "header":
-                            devices.appendleft(device_entry)
-                        else:
-                            devices.append(device_entry)
-                initialization_complete = True
-                break
+            # 获取当前设备数量并检查变化 - 最短持有锁的时间
+            with devices_pool_lock:
+                current_device_count = len(device_pool_manager.device_pool)
+                initialization_complete = device_pool_manager.initialization_complete
+            
+            # 如果设备数量发生变化，更新最后注册时间
+            if current_device_count > device_count:
+                last_registration_time = time.time()
+                device_count = current_device_count
+                print(f"新设备注册，当前设备数: {device_count}")
+            
+            # 检查是否超过10秒没有新设备注册
+            if time.time() - last_registration_time >= TIMEOUT and not initialization_complete:
+                if device_count > 0:  # 确保至少有一个设备
+                    # 初始化阶段结束，将当前设备设为工作设备
+                    with devices_pool_lock:
+                        if not device_pool_manager.initialization_complete:  # 再次检查以避免竞态条件
+                            device_pool_manager.set_initialization_complete()
+                            # 将设备添加到兼容旧代码的设备集合
+                            devices.clear()  # 清空现有设备
+                            for device in device_pool_manager.working_devices:
+                                device_entry = {
+                                    "ip": device.get("ip"),
+                                    "role": device.get("role"),
+                                    "device_id": device.get("device_id")
+                                }
+                                if device_entry["role"] == "header":
+                                    devices.appendleft(device_entry)
+                                else:
+                                    devices.append(device_entry)
+                            initialization_complete = True
+                    print(f"初始化完成，收集到 {device_count} 个工作设备")
+                else:
+                    print("警告: 初始化超时，但没有设备注册")
+                    return  # 如果没有设备，直接退出
             
             # 周期性打印状态
-            if time.time() - initialization_start_time > 0 and int(time.time() - initialization_start_time) % 2 == 0:
-                print(f"等待初始化... 已经等待 {int(time.time() - initialization_start_time)} 秒，超时时间 {TIMEOUT} 秒")
-                print(f"当前已收集到 {len(device_pool_manager.device_pool)} 个设备")
+            if time.time() - last_registration_time > 0 and int(time.time() - last_registration_time) % 2 == 0:
+                print(f"等待初始化... 距离上次设备注册已过去 {int(time.time() - last_registration_time)} 秒")
+                print(f"当前已收集到 {device_count} 个设备")
             
-
             time.sleep(0.5)  # 减少等待时间，更频繁地检查
+        
+        if device_count == 0:
+            print("初始化失败：没有设备注册")
+            return
         
         print(f"初始化阶段结束，工作设备数: {len(device_pool_manager.working_devices)}")
         print(f"准备分割模型和发送模型...")
@@ -998,16 +643,16 @@ def main():
                 for ip in ip_graph_requested:
                     send.send_multipart([ip, b"ready for monitor"])
                 # # start monitor
-                monitor = monitor.Monitor(monitor_receive_interval, monitor_port, devices, requested_model, \
+                monitor_instance = monitor.Monitor(monitor_receive_interval, monitor_port, devices, requested_model, \
                                         bytearray_path, flop_module_path, num_flop, runtime_option)
-                thread = threading.Thread(target=monitor.start)
+                thread = threading.Thread(target=monitor_instance.start)
                 thread.start()
 
                 num_devices = len(devices)
-                monitor.is_monitor_ready.wait()
+                monitor_instance.is_monitor_ready.wait()  # 等待监控数据就绪
 
                 # 参数
-                ping_latency, bandwidths, TotalMem, AvailMem, flop_speed = monitor.get_monitor_info()
+                ping_latency, bandwidths, TotalMem, AvailMem, flop_speed = monitor_instance.get_monitor_info()
 
 
                 mem_threshold = .7  # set threshold for memory
@@ -1174,10 +819,25 @@ def main():
         locks = [threading.Lock(), threading.Lock()]
         conditions = [threading.Condition() for i in range(len(device_pool_manager.working_devices) + 1)]
         
+    
+        
+        
+        # 创建新的通信套接字，使用monitor_port而不是原来的端口
+        try:
+            print(f"尝试使用monitor_port: {monitor_port}作为通信端口")
+            communication_socket = context.socket(zmq.ROUTER)
+            communication_socket.bind(f"tcp://*:{monitor_port}")
+            print(f"通信套接字已绑定到monitor_port: {monitor_port}")
+        except zmq.error.ZMQError as e:
+            print(f"无法绑定到monitor_port: {e}")
+            # 尝试使用原始端口
+           
+               
+        
         for i in range(config["num_device"]):
             t = threading.Thread(
                 target=root_server.communication_open_close, 
-                args=(registration_socket, config, status, conditions, locks)
+                args=(communication_socket, config, status, conditions, locks)
             )
             threads.append(t)
         
@@ -1200,9 +860,7 @@ def main():
             device_pool_manager.printInfo()
             print(f"初始化完成: {'是' if device_pool_manager.initialization_complete else '否'}")
             
-            # 检查设备池完整性
-            device_pool_manager.check_device_pool_integrity()
-    
+            
     except KeyboardInterrupt:
         print("\n用户中断，程序退出...")
         running = False
@@ -1215,6 +873,7 @@ def main():
         print("清理资源...")
         try:
             registration_socket.close()
+            communication_socket.close()
             context.term()
         except Exception as e:
             print(f"关闭资源时出错: {e}")
