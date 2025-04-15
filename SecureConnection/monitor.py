@@ -11,6 +11,7 @@ import threading
 import copy
 from collections import deque
 from .root_server import send_model_file
+import traceback
 
 TIMEOUT = 1000
 
@@ -133,32 +134,57 @@ class Monitor:
         device_set = set()
         print("monitor start listening")
         print(f"device set size: {self.root_device_len}")
+        
+        # 增加超时计数，用于限制重试次数
+        timeout_counter = 0
+        max_timeouts = 3  # 最多尝试3次
+        
         while continue_listening:
-            if self.socket.poll(30000):
+            if self.socket.poll(30000):  # 30秒超时
+                timeout_counter = 0  # 收到消息，重置超时计数
                 print("monitor start listening")
-                identifier, action, msg_content = self.socket.recv_multipart()
-                # print(f"monitor identifier: {identifier.hex()}")
-                print(f"monitor action: {action.decode()}")
-                print(f"monitor msg_content: {msg_content.decode()}")
-                print("monitor message received")
-                print("\n-----------------------------------\n")
+                try:
+                    message_parts = self.socket.recv_multipart()
+                    
+                    if len(message_parts) < 3:
+                        print(f"警告: 收到不完整消息，只有 {len(message_parts)} 个部分")
+                        continue
+                    
+                    identifier = message_parts[0]
+                    action = message_parts[1]
+                    msg_content = message_parts[2]
+                    
+                    # print(f"monitor identifier: {identifier.hex()}")
+                    print(f"monitor action: {action.decode()}")
+                    print(f"monitor msg_content: {msg_content.decode()}")
+                    print("monitor message received")
+                    print("\n-----------------------------------\n")
 
-                if action.decode() == "MonitorIP":
-                    print("In MonitorIP  monitor waiting for all device to be connected...")
-                    self.ip_graph_requested.append(identifier)
-                    jsonObject = json.loads(msg_content.decode())
-                    ip = jsonObject.get("ip")
-                    device_set.add(ip)
-                    role = jsonObject.get("role")
-                    print(f"device set: {device_set}")
-                    # if role == "header":
-                    #     self.devices.appendleft({"ip": ip, "role": role})
-                    # else:
-                    #     self.devices.append({"ip": ip, "role": role})
-                last_received_time = time.time()
+                    if action.decode() == "MonitorIP":
+                        print("In MonitorIP  monitor waiting for all device to be connected...")
+                        self.ip_graph_requested.append(identifier)
+                        jsonObject = json.loads(msg_content.decode())
+                        ip = jsonObject.get("ip")
+                        device_set.add(ip)
+                        role = jsonObject.get("role")
+                        print(f"device set: {device_set}")
+                    last_received_time = time.time()
+                except Exception as e:
+                    print(f"监控消息接收处理错误: {e}")
+                    traceback.print_exc()
+                    continue
             else:
-                raise RuntimeError("No message received. Check the device connection.")
-
+                # 增加超时处理逻辑
+                timeout_counter += 1
+                print(f"警告: 监控超时 {timeout_counter}/{max_timeouts}，无法接收设备消息")
+                
+                if timeout_counter >= max_timeouts:
+                    print("错误: 多次尝试后仍无法接收设备消息，继续处理...")
+                    # 而不是直接抛出异常，设置监控就绪标志并退出循环
+                    self.is_monitor_ready.set()
+                    return  # 退出函数，不执行后续代码
+                
+                continue  # 继续循环，尝试再次接收消息
 
             # if time.time() - last_received_time > TIMEOUT:
             if len(device_set) == self.root_device_len:
@@ -181,35 +207,62 @@ class Monitor:
 
         try:
             monitor_ready_set = set()
+            timeout_counter = 0  # 重置超时计数
+            
             while self.receive_monitor:
-                if self.socket.poll(100000):
+                if self.socket.poll(30000):  # 30秒超时
+                    timeout_counter = 0  # 收到消息，重置超时计数
                     print("monitor start receiving results from edges")
-                    identifier , action, msg_content = self.socket.recv_multipart()
-                    print("monitor information received")
-                    if action.decode() == "Monitor":
-                        jsonObject = json.loads(msg_content.decode())
-                        ip = jsonObject.get("ip")
-                        latency_arr = jsonObject.get("latency")
-                        latency_arr = json.loads(latency_arr)
-                        bandwidth_arr = jsonObject.get("bandwidth")
-                        bandwidth_arr = json.loads(bandwidth_arr)
-                        memory = jsonObject.get("memory")
-                        memory = json.loads(memory)
-                        total_mem, avail_mem = memory[0], memory[1]
-                        # total_mem = jsonObject.get("totalMemory")
-                        # avail_mem = jsonObject.get("availableMemory")
-                        flop = jsonObject.get("flop")
+                    try:
+                        message_parts = self.socket.recv_multipart()
+                        
+                        if len(message_parts) < 3:
+                            print(f"警告: 收到不完整消息，只有 {len(message_parts)} 个部分")
+                            continue
+                        
+                        identifier = message_parts[0]
+                        action = message_parts[1]
+                        msg_content = message_parts[2]
+                        
+                        print("monitor information received")
+                        if action.decode() == "Monitor":
+                            jsonObject = json.loads(msg_content.decode())
+                            ip = jsonObject.get("ip")
+                            latency_arr = jsonObject.get("latency")
+                            latency_arr = json.loads(latency_arr)
+                            bandwidth_arr = jsonObject.get("bandwidth")
+                            bandwidth_arr = json.loads(bandwidth_arr)
+                            memory = jsonObject.get("memory")
+                            memory = json.loads(memory)
+                            total_mem, avail_mem = memory[0], memory[1]
+                            # total_mem = jsonObject.get("totalMemory")
+                            # avail_mem = jsonObject.get("availableMemory")
+                            flop = jsonObject.get("flop")
 
-                        print('-----------monitor info coming--------------')
-                        print(f'ip: {ip}')
-                        print(f'latency:\n {latency_arr}')
-                        print(f'bandwidth:\n {bandwidth_arr}')
-                        print(f'total mem: {total_mem}')
-                        print(f'available mem: {avail_mem}')
-                        print('--------------------------------------------')
+                            print('-----------monitor info coming--------------')
+                            print(f'ip: {ip}')
+                            print(f'latency:\n {latency_arr}')
+                            print(f'bandwidth:\n {bandwidth_arr}')
+                            print(f'total mem: {total_mem}')
+                            print(f'available mem: {avail_mem}')
+                            print('--------------------------------------------')
 
-                        self.updateMonitorInfo(ip, latency_arr, bandwidth_arr, total_mem, avail_mem, flop)
-                        monitor_ready_set.add(ip)
+                            self.updateMonitorInfo(ip, latency_arr, bandwidth_arr, total_mem, avail_mem, flop)
+                            monitor_ready_set.add(ip)
+                    except Exception as e:
+                        print(f"监控数据处理错误: {e}")
+                        traceback.print_exc()
+                        continue
+                else:
+                    # 增加超时处理逻辑
+                    timeout_counter += 1
+                    print(f"警告: 监控超时 {timeout_counter}/{max_timeouts}，无法接收设备响应")
+                    
+                    if timeout_counter >= max_timeouts:
+                        print("错误: 多次尝试后仍无法接收设备响应，继续处理...")
+                        # 设置监控就绪标志
+                        self.is_monitor_ready.set()
+                        break  # 退出循环
 
                 if len(monitor_ready_set) == device_num and self.record_time == 0:
                     print("monitor info ready for model init")
@@ -220,35 +273,41 @@ class Monitor:
                 if len(monitor_ready_set) == device_num and time.time() - last_monitor_time > self.monitor_receive_interval:
                     self.latency_list.append(self.latency)
                     self.bandwidth_list.append(self.bandwidth)
-                    self.memory_list.append(self.avail_memory)
-                    self.flop_list.append(self.flop_speed)
+                    temp_memory = []
+                    for i in range(len(self.avail_memory)):
+                        temp_memory.append(self.avail_memory[i])
+                    self.memory_list.append(temp_memory)
+                    temp_flop = []
+                    for i in range(len(self.flop_speed)):
+                        temp_flop.append(self.flop_speed[i])
+                    self.flop_list.append(temp_flop)
+
+                    print("monitor list update")
+                    print(f'latency list length: {len(self.latency_list)}')
+                    print(f'bandwidth list length: {len(self.bandwidth_list)}')
+                    print(f'memory list length: {len(self.memory_list)}')
+                    print(f'flop list length: {len(self.flop_list)}')
+                    if self.record_time > 0:
+                        self.record_time -= 1
                     monitor_ready_set.clear()
-                    self.record_time -= 1
-
-                    print(f'monitor signal time left: {self.record_time}')
                     last_monitor_time = time.time()
-                    self.send_monitor_signal(1)
+                    # print(f'Monitor record time: {self.record_time}')
+        except Exception as e:
+            print(f"监控线程异常: {e}")
+            traceback.print_exc()
+            # 确保即使发生异常，也会设置监控就绪标志
+            self.is_monitor_ready.set()
 
-
-                # send monitor triger signal in a time interval
-                # if time.time() - last_monitor_time > self.monitor_receive_interval:
-                #     last_monitor_time = time.time()
-                #     self.send_monitor_signal(1)
-                #     # self.record_time -= 1
-
-                if time.time() - monitor_start_time > TIMEOUT and self.receive_num == 0:
-                    print("send stop monitor signal")
-                    self.receive_monitor = False
-                    self.send_monitor_signal(0)
-                    self.all_data_ready.set()
-                    self.print_monitor_info()
-        except KeyboardInterrupt:
-            print("\nTerminating program...")
-            # Optionally add any cleanup code you need here
-            sys.exit(0)
-
-        socket.close()
-        context.term()
+        # 修复socket关闭问题，使用self.socket
+        try:
+            if hasattr(self, 'socket') and self.socket:
+                self.socket.close()
+            if 'context' in locals() and context:
+                context.term()
+            print("监控资源已清理")
+        except Exception as e:
+            print(f"关闭监控资源时出错: {e}")
+            traceback.print_exc()
 
     def updateMonitorInfo(self, ip, latency_arr, bandwidth_arr, total_mem, avail_mem, flop):
         index = self.ip_map_id[ip]

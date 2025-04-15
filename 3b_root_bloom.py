@@ -18,13 +18,13 @@ monitor_port = "34567"  # set server port to receive monitor info
 TIMEOUT = 15  # Time to wait for new devices to connect to servers
 MODEL_EXIST_ON_DEVICE = True  # set True if the model exists on the mobile device, will skip model creation and transmission
 runtime_option = False  # set True if the load balance is runtime
-split_size = 3
-device_number = 3
+split_size = 2
+device_number = 2
 task = "Generation"
 root_dir = os.path.dirname(os.path.abspath(__file__))
 residual_connection_option = True
 
-#
+
 # def round_robin_module_arrangement(num_devices, num_modules):
 #     arrangement = [[0 for _ in range(num_modules)] for _ in range(num_devices)]
 #     modules_per_device = num_modules // num_devices
@@ -36,32 +36,32 @@ residual_connection_option = True
 #             arrangement[i][j] = 1
 #         start = end
 #     return np.array(arrangement)
-# Quntization_Option=False
-#
-# model_card = ModelCard('bloom7b1', quantization_option=Quntization_Option, task_type=task,
+# Quntization_Option=True
+
+# model_card = ModelCard('bloom3b', quantization_option=Quntization_Option, task_type=task,
 #                        residual_connection=residual_connection_option, load_balancing_option=False,
 #                        split_size=split_size)
-#
+
 # mem_util, out_size_map, bytearray_path, flop_module_path, num_flop, module_flop_map, num_modules \
 #     = model_card.prepare_optimization_info()
-#
+
 # # initial_module_arrangement = round_robin_module_arrangement(device_number, split_size)
 # # overlapping_module_arrangement = initial_module_arrangement  # Assuming no dynamic arrangement needed
-#
-# requested_model = 'bloom7b1'
+
+# requested_model = 'bloom3b'
 # to_send_path = retrieve_sending_dir(root_dir, requested_model, quantization_option=Quntization_Option,
 #                                             residual_connection=residual_connection_option)
-# initial_module_arrangement=[[1 ,1 ,1 ,1, 1, 1 ,1 ,1, 1, 1 ,1 ,1 ,1 ,1 ,1 ,1, 1 ,1 ,1 ,1 ,1 ,0 ,0 ,0, 1],
-#                             [0 ,0 ,0 ,0 ,0 ,0, 0, 0, 0 ,0 ,0, 0 ,0 ,0 ,0 ,0, 0 ,0 ,0 ,0 ,0 ,1, 1 ,1, 0 ]]
+# initial_module_arrangement=[[1 ,1 ,1 ,1, 1, 1 ,1 ,1, 1, 1 ,1 ,1 ,1 ,1 ,1 ,1, 1 ,1 ,1 ,0 ,0 ,0 ,0 ,0, 0],
+#                             [0 ,0 ,0 ,0 ,0 ,0, 0, 0, 0 ,0 ,0, 0 ,0 ,0 ,0 ,0, 0 ,0 ,0 ,1 ,1 ,1, 1 ,1, 1 ]]
 # print("initial_module_arrangement")
 # print(initial_module_arrangement)
-#
+
 # model_dirs = model_card.prepare_model_to_send(module_arrangement=initial_module_arrangement)
 
 if __name__ == "__main__":
     start = time.time()
     context = zmq.Context()
-    send = server.establish_connection(context, zmq.ROUTER, 23456)
+    send = server.establish_connection(context, zmq.ROUTER, 234567)
 
     # start receiving the ips sent from android devices
     # once all ips are received, broadcast messages to all android devices saying all ip received
@@ -69,7 +69,7 @@ if __name__ == "__main__":
     devices = deque()
     ip_graph_requested = []  # Buffer to store addresses from devices
     last_received_time = time.time()
-    continue_listening = True
+    continue_listening = False
     # requested_model = 'bloom560m'
     requested_model = 'bloom3b'
     #

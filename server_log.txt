@@ -1,0 +1,40 @@
+[2025-04-10 05:39:28,256] [INFO] [real_accelerator.py:203:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[93m [WARNING] [0m async_io requires the dev libaio .so object and headers but these were not found.
+[93m [WARNING] [0m async_io: please install the libaio-dev package with apt
+[93m [WARNING] [0m If libaio is already installed (perhaps from source), try setting the CFLAGS and LDFLAGS environment variables to where it can be found.
+[93m [WARNING] [0m Please specify the CUTLASS repo directory as environment variable $CUTLASS_PATH
+[93m [WARNING] [0m sparse_attn requires a torch version >= 1.5 and < 2.0 but detected 2.4
+[93m [WARNING] [0m using untested triton version (3.0.0), only 1.0.0 is known to be compatible
+==== 分布式推理系统启动 ====
+等待设备注册，初始化阶段超时: 10秒
+端口23456可用，准备启动服务
+创建ROUTER套接字并绑定到端口23456...
+ROUTER套接字绑定成功
+启动心跳检查线程，每 5 秒检查一次...
+设备注册/通信线程已启动，监听端口: 23456
+
+初始设备池状态:
+工作设备: 0个
+活跃设备: 0个
+工作设备故障: 0个
+活跃设备故障: 0个
+阶段1: 等待初始设备注册 (超时: 10 秒)...
+
+初始化阶段超时: 已有 10 秒未收到新的设备注册请求
+警告: 初始化结束时没有设备在活跃池中
+初始化阶段完成！共有 0 个工作设备
+当前状态: 工作设备: 0个, 活跃设备: 0个
+          工作设备故障: 0个, 活跃设备故障: 0个
+警告: 转移后工作设备池为空
+进入正常运行阶段: 后续注册的设备将只作为活跃设备，不会成为工作设备
+警告: 没有工作设备可用，无法启动模型加载和分配
+接收到消息，部分数量: 3
+  部分 0: device1...
+  部分 1: RegisterIP...
+  部分 2: {"ip": "192.168.1.101", "role": "header", "device_...
+处理消息: 标识符=device1, 操作=RegisterIP
+接收到设备注册请求: 192.168.1.101, 角色: header, 设备ID: device1
+注册设备，ID: device1, IP: 192.168.1.101, 角色: header
+
+系统运行状态 ====
+已运行时间: 0.5分钟

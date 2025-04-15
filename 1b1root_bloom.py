@@ -18,10 +18,47 @@ monitor_port = "34567"  # set server port to receive monitor info
 TIMEOUT = 15  # Time to wait for new devices to connect to servers
 MODEL_EXIST_ON_DEVICE = True  # set True if the model exists on the mobile device, will skip model creation and transmission
 runtime_option = False  # set True if the load balance is runtime
-
+split_size=2
 task = "Generation"
 root_dir = os.path.dirname(os.path.abspath(__file__))
 residual_connection_option = True
+
+Quntization_Option=False
+
+
+def round_robin_module_arrangement(num_devices, num_modules):
+    arrangement = [[0 for _ in range(num_modules)] for _ in range(num_devices)]
+    modules_per_device = num_modules // num_devices
+    extra_modules = num_modules % num_devices
+    start = 0
+    for i in range(num_devices):
+        end = start + modules_per_device + (1 if i < extra_modules else 0)
+        for j in range(start, end):
+            arrangement[i][j] = 1
+        start = end
+    return np.array(arrangement)
+
+
+model_card = ModelCard('bloom1b1', quantization_option=Quntization_Option, task_type=task,
+                       residual_connection=residual_connection_option, load_balancing_option=False,
+                       split_size=split_size)
+
+# mem_util, out_size_map, bytearray_path, flop_module_path, num_flop, module_flop_map, num_modules \
+#     = model_card.prepare_optimization_info()
+
+initial_module_arrangement = round_robin_module_arrangement(2, split_size)
+# overlapping_module_arrangement = initial_module_arrangement  # Assuming no dynamic arrangement needed
+
+requested_model = 'bloom1b1'
+to_send_path = retrieve_sending_dir(root_dir, requested_model, quantization_option=Quntization_Option,
+                                            residual_connection=residual_connection_option)
+# initial_module_arrangement=[[1 ,1 ,1 ,1, 1, 1 ,1 ,1, 1, 1 ,1 ,1 ,1 ,1 ,1 ,1, 1 ,1 ,1 ,0 ,0 ,0 ,0 ,0, 0],
+#                             [0 ,0 ,0 ,0 ,0 ,0, 0, 0, 0 ,0 ,0, 0 ,0 ,0 ,0 ,0, 0 ,0 ,0 ,1 ,1 ,1, 1 ,1, 1 ]]
+print("initial_module_arrangement")
+print(initial_module_arrangement)
+
+model_dirs = model_card.prepare_model_to_send(module_arrangement=initial_module_arrangement)
+
 
 if __name__ == "__main__":
     start = time.time()
