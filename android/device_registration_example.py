@@ -16,7 +16,6 @@ import threading
 from datetime import datetime
 import platform
 import uuid
-import traceback
 
 def get_local_ip():
     """获取本地IP地址"""
@@ -48,7 +47,6 @@ def send_heartbeat(server_ip, port, device_id):
         }
         
         # 发送ZMQ格式的心跳消息
-        print(f"发送心跳: 设备ID={device_id}, 时间戳={heartbeat_data['timestamp']}")
         socket.send_multipart([
             b"HEARTBEAT",
             json.dumps(heartbeat_data).encode('utf-8')
@@ -58,32 +56,8 @@ def send_heartbeat(server_ip, port, device_id):
         socket.setsockopt(zmq.RCVTIMEO, 5000)  # 5秒超时
         try:
             response = socket.recv_multipart()
-            print(f"心跳响应: {len(response)} 部分")
-            for i, part in enumerate(response):
-                part_content = part[:50].decode('utf-8', errors='replace') if isinstance(part, bytes) else str(part)[:50]
-                print(f"  部分 {i}: {part_content}...")
-            
-            if len(response) > 0:
-                action = response[0].decode()
-                if action == "HEARTBEAT_ACK":
-                    print(f"心跳确认: {action}")
-                    try:
-                        if len(response) > 2:
-                            response_data = json.loads(response[2].decode())
-                            server_time = response_data.get("data", {}).get("server_time", 0)
-                            if server_time:
-                                time_diff = abs(time.time() - server_time)
-                                print(f"服务器时间差: {time_diff:.3f}秒")
-                    except:
-                        pass
-                    return True
-                else:
-                    print(f"心跳响应异常: {action}")
-                    return False
-            else:
-                print("收到空心跳响应")
-                return False
-                    
+            print(f"心跳响应: {response[0].decode()}")
+            return True
         except zmq.error.Again:
             print("心跳响应超时")
             return False
@@ -127,28 +101,12 @@ def register_device(server_ip, port, device_role, model_request=None, device_id=
     if device_id is None:
         device_id = f"{platform.node()}-{uuid.uuid4().hex[:8]}"
     
-    print(f"准备注册设备: ID={device_id}, IP={virtual_ip or get_local_ip()}, 角色={device_role}")
-    print(f"连接服务器: {server_ip}:{port}")
-    
-    context = None
-    socket = None
-    
     try:
         # 创建ZMQ上下文和套接字
         context = zmq.Context()
         socket = context.socket(zmq.DEALER)
         socket.identity = device_id.encode('utf-8')
-        
-        # 设置超时
-        socket.setsockopt(zmq.RCVTIMEO, 15000)  # 15秒超时
-        socket.setsockopt(zmq.SNDTIMEO, 10000)  # 10秒发送超时
-        socket.setsockopt(zmq.LINGER, 1000)     # 关闭时等待发送1秒
-        socket.setsockopt(zmq.SNDHWM, 1000)     # 设置发送高水位标记
-        socket.setsockopt(zmq.RCVHWM, 1000)     # 设置接收高水位标记
-        
-        # 连接到服务器
         socket.connect(f"tcp://{server_ip}:{port}")
-        print(f"ZMQ套接字已连接")
         
         # 获取设备信息
         device_info = {
@@ -165,124 +123,44 @@ def register_device(server_ip, port, device_role, model_request=None, device_id=
             device_info['model'] = model_request
         
         # 发送ZMQ格式的注册消息
-        print(f"发送注册请求: {json.dumps(device_info)[:100]}...")
-        
-        # 准备要发送的数据
-        request_data = json.dumps(device_info).encode('utf-8')
-        print(f"请求数据长度: {len(request_data)} 字节")
-        
-        # 发送请求
         socket.send_multipart([
             b"RegisterIP",
-            request_data
+            json.dumps(device_info).encode('utf-8')
         ])
-        print(f"注册请求已发送，等待响应...")
         
         # 等待响应，设置超时
+        socket.setsockopt(zmq.RCVTIMEO, 10000)  # 10秒超时
         try:
             response = socket.recv_multipart()
-            print(f"收到响应: {len(response)} 部分")
+            action = response[0].decode()
+            msg = response[1].decode() if len(response) > 1 else ""
             
-            # 打印响应的每个部分
-            for i, part in enumerate(response):
-                if isinstance(part, bytes):
-                    if len(part) > 200:
-                        print(f"  部分 {i}: {part[:200].decode('utf-8', errors='replace')}... (长度: {len(part)})")
-                    else:
-                        print(f"  部分 {i}: {part.decode('utf-8', errors='replace')} (长度: {len(part)})")
-                else:
-                    print(f"  部分 {i}: {part}")
-            
-            # 处理响应
-            if len(response) == 0:
-                print("警告: 收到空响应")
-                return False, None, None
-                
-            # 解析第一部分作为动作
-            action = response[0].decode('utf-8', errors='replace') if len(response) > 0 else "NO_RESPONSE"
-            
-            # 如果第二部分存在，解析为消息
-            msg = None
-            if len(response) > 1:
-                try:
-                    # 尝试作为JSON解析
-                    msg = json.loads(response[1].decode('utf-8'))
-                    print(f"消息解析为JSON: {json.dumps(msg)[:200]}...")
-                except json.JSONDecodeError:
-                    # 如果不是JSON，作为文本处理
-                    msg = response[1].decode('utf-8', errors='replace')
-                    print(f"消息解析为文本: {msg[:200]}...")
-                except UnicodeDecodeError:
-                    # 如果解码失败，显示二进制数据
-                    msg = f"<二进制数据，长度: {len(response[1])}>"
-                    print(f"消息无法解码: {msg}")
-            
-            # 如果第三部分存在，尝试解析为数据
-            data = None
-            if len(response) > 2:
-                try:
-                    data = json.loads(response[2].decode('utf-8'))
-                    print(f"数据解析为JSON: {json.dumps(data)[:200]}...")
-                except json.JSONDecodeError:
-                    # 如果不是JSON，作为文本处理
-                    data_text = response[2].decode('utf-8', errors='replace')
-                    print(f"数据解析为文本: {data_text[:200]}...")
-                    data = {"raw_text": data_text}
-                except UnicodeDecodeError:
-                    # 如果解码失败，显示二进制数据
-                    print(f"数据无法解码，二进制长度: {len(response[2])}")
-                    data = {"binary_length": len(response[2])}
-            
-            # 处理成功响应
             if action == "REGISTRATION_SUCCESSFUL":
-                print(f"设备 {device_id} 注册成功!")
-                
-                # 提取响应中的有用信息
-                if isinstance(data, dict):
-                    pool_status = data.get("data", {}).get("pool_status", {})
-                    if pool_status:
-                        print(f"\n设备池状态:")
-                        print(f"  工作设备: {pool_status.get('working_devices', 0)}个")
-                        print(f"  活跃设备: {pool_status.get('active_devices', 0)}个")
-                        print(f"  工作设备故障: {pool_status.get('working_failures', 0)}个")
-                        print(f"  活跃设备故障: {pool_status.get('active_failures', 0)}个")
+                print(f"设备 {device_id} 注册成功")
+                print(f"服务器响应: {msg}")
                 
                 assigned_ip = device_info['ip']  # 使用发送的IP作为分配的IP
                 
                 # 启动心跳线程
-                print(f"启动心跳线程...")
                 start_heartbeat_thread(server_ip, port, device_id, 5)  # 5秒心跳间隔
                 
                 return True, device_id, assigned_ip
             else:
-                print(f"注册失败: 收到 {action} 响应")
-                if msg:
-                    print(f"错误消息: {msg}")
+                print(f"注册失败: {action} - {msg}")
                 return False, None, None
         
         except zmq.error.Again:
             print("注册响应超时")
-            print("可能原因:")
-            print("1. 服务器未运行或无法连接")
-            print("2. 服务器无响应或处理时间过长")
-            print("3. 网络问题导致响应丢失")
             return False, None, None
             
     except Exception as e:
-        print(f"注册过程中出错: {str(e)}")
-        traceback.print_exc()
+        print(f"注册过程中出错: {e}")
         return False, None, None
     finally:
-        try:
-            if socket:
-                print("关闭ZMQ套接字...")
-                socket.close(linger=100)  # 给100ms让剩余消息发送完成
-            if context:
-                print("终止ZMQ上下文...")
-                context.term()
-            print("清理完成")
-        except Exception as e:
-            print(f"清理资源时出错: {str(e)}")
+        if 'socket' in locals():
+            socket.close()
+        if 'context' in locals():
+            context.term()
 
 def query_device_pool_status(server_ip, port):
     """
