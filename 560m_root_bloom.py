@@ -21,7 +21,7 @@ import traceback
 monitor_receive_interval = 10  # set intervals for receiving monitor info from clients
 monitor_port = "34567"  # set server port to receive monitor info
 TIMEOUT =10 # Time to wait for new devices to connect to servers
-MODEL_EXIST_ON_DEVICE = True  # set True if the model exists on the mobile device, will skip model creation and transmission
+MODEL_EXIST_ON_DEVICE = False  # set True if the model exists on the mobile device, will skip model creation and transmission
 runtime_option = False  # set True if the load balance is runtime
 split_size = 2
 device_number =2
@@ -130,15 +130,15 @@ class DevicePoolManager:
             
             # 设备不存在，需要添加
             if self.initialization_complete:
-                # 初始化完成后，新设备直接添加到工作设备池
-                self.working_devices.append(device_info)
-                status = "working"
-                print(f"运行阶段 - 新设备已注册为工作设备: ID={device_id}, IP={ip}")
+                # 初始化完成后，新设备直接添加到活跃设备池
+                self.active_devices.append(device_info)
+                status = "active"
+                print(f"运行阶段 - 新设备已注册为活跃设备: ID={device_id}, IP={ip}")
             else:
                 # 初始化阶段，添加到设备池
                 self.device_pool.append(device_info)
-                status = "active"
-                print(f"初始化阶段 - 新设备已注册: ID={device_id}, IP={ip}, 角色={device_info.get('role')}")
+                status = "working"
+                print(f"初始化阶段 - 新设备已注册为工作设备: ID={device_id}, IP={ip}, 角色={device_info.get('role')}")
             
             # 更新设备状态（原子操作）
             self.device_status[device_id] = {
@@ -761,6 +761,11 @@ def main():
             else:
                 pathList = [str(ip), f"/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_quantized_int8_res/device{index}/module{index}/module.zip"]
             
+            # if not Quntization_Option:
+            #     pathList = [str(ip), f"/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_unquantized_seq/device{index}/module{index}/module.zip"]
+            # else:
+            #     pathList = [str(ip), f"/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_quantized_int8_seq/device{index}/module{index}/module.zip"]
+            
             pathLists.append(pathList)
         
         # 保存路径列表
@@ -820,7 +825,7 @@ def main():
         conditions = [threading.Condition() for i in range(len(device_pool_manager.working_devices) + 1)]
         
     
-        
+
         
         # 创建新的通信套接字，使用monitor_port而不是原来的端口
         try:

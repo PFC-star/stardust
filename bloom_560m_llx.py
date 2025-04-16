@@ -13,55 +13,18 @@ import heapq
 import json
 import os
 from collections import deque
+from util.model_card import retrieve_sending_dir, retrieve_sending_info, retrieve_file_cfg
 from util.model_card import available_models, ModelCard, retrieve_sending_dir, retrieve_sending_info, retrieve_file_cfg
-from system_pipeline.onnx_backend.optimization import Optimizer
-
 monitor_receive_interval = 10  # set intervals for receiving monitor info from clients
 monitor_port = "34567"  # set server port to receive monitor info
 TIMEOUT =10 # Time to wait for new devices to connect to servers
 MODEL_EXIST_ON_DEVICE = True  # set True if the model exists on the mobile device, will skip model creation and transmission
 runtime_option = False  # set True if the load balance is runtime
 split_size = 2
-device_number =2
+device_number = 2
 task = "Generation"
 root_dir = os.path.dirname(os.path.abspath(__file__))
 residual_connection_option = True
-Quntization_Option=False
-
-
-# def round_robin_module_arrangement(num_devices, num_modules):
-#     arrangement = [[0 for _ in range(num_modules)] for _ in range(num_devices)]
-#     modules_per_device = num_modules // num_devices
-#     extra_modules = num_modules % num_devices
-#     start = 0
-#     for i in range(num_devices):
-#         end = start + modules_per_device + (1 if i < extra_modules else 0)
-#         for j in range(start, end):
-#             arrangement[i][j] = 1
-#         start = end
-#     return np.array(arrangement)
-
-# model_card = ModelCard('bloom560m', quantization_option=Quntization_Option, task_type=task,
-#                        residual_connection=residual_connection_option, load_balancing_option=False,
-#                        split_size=split_size)
-
-# mem_util, out_size_map, bytearray_path, flop_module_path, num_flop, module_flop_map, num_modules \
-#     = model_card.prepare_optimization_info()
-
-# # initial_module_arrangement = round_robin_module_arrangement(device_number, split_size)
-# # overlapping_module_arrangement = initial_module_arrangement  # Assuming no dynamic arrangement needed
-
-# requested_model = 'bloom560m'
-
-# to_send_path = retrieve_sending_dir(root_dir, requested_model, quantization_option=Quntization_Option,
-#                                             residual_connection=residual_connection_option)
-# initial_module_arrangement=[[1 ,1 ,1 ,1, 1, 1 ,1 ,1, 1, 1 ,1 ,1 ,1 ,1 ,1 ,1, 1 ,1 ,1 ,1 ,1 ,0 ,0 ,0, 0],
-#                             [0 ,0 ,0 ,0 ,0 ,0, 0, 0, 0 ,0 ,0, 0 ,0 ,0 ,0 ,0, 0 ,0 ,0 ,0 ,0 ,1, 1 ,1, 1 ]]
-# print("initial_module_arrangement")
-# print(initial_module_arrangement)
-# initial_module_arrangement = round_robin_module_arrangement(split_size, split_size)
-
-# model_dirs = model_card.prepare_model_to_send(module_arrangement=initial_module_arrangement)
 
 if __name__ == "__main__":
     start = time.time()
@@ -80,7 +43,7 @@ if __name__ == "__main__":
     # requested_model = 'bloom560m'
     # requested_model = 'bloom560m-int8'
     #
-   
+    
 
     ##################################################################################
     ####################### 1. Devices-Server Connection Section #####################
@@ -149,7 +112,7 @@ if __name__ == "__main__":
     # read model request and conduct relevant model processing
     if requested_model:
         print(f'start preparing model: {requested_model}')
-        if requested_model == "bloom560m":
+        if requested_model == "bloom560m" or requested_model == "bloom1b1":
             Quntization_Option = False
         if requested_model == "bloom560m-int8":
             Quntization_Option = True
@@ -157,7 +120,8 @@ if __name__ == "__main__":
         requested_model='bloom560m'
         to_send_path = retrieve_sending_dir(root_dir, requested_model, quantization_option=Quntization_Option,
                                             residual_connection=residual_connection_option)
-
+        to_send_path = "/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_unquantized_res"
+                       
         if  os.path.isdir(to_send_path):
             print('to_send dir exists')
             # Load the JSON string from the file
@@ -187,6 +151,70 @@ if __name__ == "__main__":
             model_card = ModelCard(requested_model, quantization_option=Quntization_Option, task_type=task,
                                    residual_connection=residual_connection_option, load_balancing_option=False,split_size=split_size)
 
+
+
+            # mem_util, out_size_map, bytearray_path, flop_module_path, num_flop, module_flop_map, num_modules \
+            #     = model_card.prepare_optimization_info()
+
+
+
+            # tokenizer_dir = model_card.retreive_tokenizer_path()
+            # directory_path = os.path.dirname(bytearray_path)
+
+            # print(f'bytearray_path: {bytearray_path}')
+            # print(f'flop_module_path: {flop_module_path}')
+            # print(f'num_flop: {num_flop}')
+            # print(f'out_size_map: {out_size_map}')
+
+            # for ip in ip_graph_requested:
+            #     send.send_multipart([ip, b"ready for monitor"])
+
+            # # # start monitor
+            # monitor = monitor.Monitor(monitor_receive_interval, monitor_port, devices, requested_model, \
+            #                           bytearray_path, flop_module_path, num_flop, runtime_option)
+            # thread = threading.Thread(target=monitor.start)
+            # thread.start()
+
+            # num_devices = len(devices)
+            # monitor.is_monitor_ready.wait()
+
+            # # 参数
+            # ping_latency, bandwidths, TotalMem, AvailMem, flop_speed = monitor.get_monitor_info()
+
+
+            # mem_threshold = .7  # set threshold for memory
+            # TotalMem = [m * mem_threshold for m in TotalMem]
+            # AvailMem = [m * mem_threshold for m in AvailMem]
+            # print("-----------------Test Optimizer Function----------------------")
+            # print("num_devices")
+            # print(num_devices)
+            # print("latency")
+            # print(ping_latency)
+            # print("bandwidth")
+            # print(bandwidths)
+            # print("totalMem")
+            # print(TotalMem)
+            # print("AvailMem")
+            # print(AvailMem)
+            # print("flop")
+            # print(flop_speed)
+
+            if model_card.split_size:
+                print("model_card.split_size: ", model_card.split_size)
+                # load_balancer = Optimizer(num_devices=num_devices, num_modules=model_card.split_size)
+                print("we use a round-robin approach")
+            else:
+                raise RuntimeError("The number of modules cannot be None! Check model_card.prepare_to_split().")
+            # load_balancer.process_initial_info(num_flop=module_flop_map,
+            #                                    flop_speed=flop_speed,
+            #                                    ping_latency=ping_latency,
+            #                                    bandwidths=bandwidths,
+            #                                    m2m=out_size_map,
+            #                                    model_size=mem_util,
+            #                                    total_mem=TotalMem,
+            #                                    ava_mem=AvailMem)
+            # initial_module_arrangement = load_balancer.initial_module_arrangement()
+            # overlapping_module_arrangement = load_balancer.dynamic_module_arrangement()
             def round_robin_module_arrangement(num_devices, num_modules):
                 arrangement = [[0 for _ in range(num_modules)] for _ in range(num_devices)]
                 modules_per_device = num_modules // num_devices
@@ -253,70 +281,6 @@ if __name__ == "__main__":
             with open(os.path.join(to_send_model_path, "session.json"), 'w') as file:
                 file.write(session_index_json)
 
-
-            # mem_util, out_size_map, bytearray_path, flop_module_path, num_flop, module_flop_map, num_modules \
-            #     = model_card.prepare_optimization_info()
-
-
-
-            # tokenizer_dir = model_card.retreive_tokenizer_path()
-            # directory_path = os.path.dirname(bytearray_path)
-
-            # print(f'bytearray_path: {bytearray_path}')
-            # print(f'flop_module_path: {flop_module_path}')
-            # print(f'num_flop: {num_flop}')
-            # print(f'out_size_map: {out_size_map}')
-
-            # for ip in ip_graph_requested:
-            #     send.send_multipart([ip, b"ready for monitor"])
-
-            # # # start monitor
-            # monitor = monitor.Monitor(monitor_receive_interval, monitor_port, devices, requested_model, \
-            #                           bytearray_path, flop_module_path, num_flop, runtime_option)
-            # thread = threading.Thread(target=monitor.start)
-            # thread.start()
-
-            # num_devices = len(devices)
-            # monitor.is_monitor_ready.wait()
-
-            # # 参数
-            # ping_latency, bandwidths, TotalMem, AvailMem, flop_speed = monitor.get_monitor_info()
-
-
-            # mem_threshold = .7  # set threshold for memory
-            # TotalMem = [m * mem_threshold for m in TotalMem]
-            # AvailMem = [m * mem_threshold for m in AvailMem]
-            # print("-----------------Test Optimizer Function----------------------")
-            # print("num_devices")
-            # print(num_devices)
-            # print("latency")
-            # print(ping_latency)
-            # print("bandwidth")
-            # print(bandwidths)
-            # print("totalMem")
-            # print(TotalMem)
-            # print("AvailMem")
-            # print(AvailMem)
-            # print("flop")
-            # print(flop_speed)
-
-            if model_card.split_size:
-                print("model_card.split_size: ", model_card.split_size)
-                # load_balancer = Optimizer(num_devices=num_devices, num_modules=model_card.split_size)
-                print("we use a round-robin approach")
-            else:
-                raise RuntimeError("The number of modules cannot be None! Check model_card.prepare_to_split().")
-            # load_balancer.process_initial_info(num_flop=module_flop_map,
-            #                                    flop_speed=flop_speed,
-            #                                    ping_latency=ping_latency,
-            #                                    bandwidths=bandwidths,
-            #                                    m2m=out_size_map,
-            #                                    model_size=mem_util,
-            #                                    total_mem=TotalMem,
-            #                                    ava_mem=AvailMem)
-            # initial_module_arrangement = load_balancer.initial_module_arrangement()
-            # overlapping_module_arrangement = load_balancer.dynamic_module_arrangement()
-           
     else:
         raise RuntimeError("requested model cannot be None!")
 
@@ -334,7 +298,7 @@ if __name__ == "__main__":
         role = i['role']
 
         if not Quntization_Option:
-            pathList = [str(ip), "/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_unquantized_res/device{}/module{}/module.zip".format(index,index)]
+            pathList = [str(ip), "/workspace/ams-LinguaLinked-Inference//onnx_model__/to_send/bloom560m_unquantized_res/device{}/module{}/module.zip".format(index,index)]
 
         else:
               pathList = [str(ip),
@@ -360,9 +324,9 @@ if __name__ == "__main__":
     print(f"session index: {session}")
 
     config = {"file_path": file_cfg,
-              "num_sample": b'1000',
+              "num_sample": b'10',       # batch_size
               "num_device": len(devices),
-              "max_length": b'40',
+              "max_length": b'60',
               "task_type": "generation".encode('utf-8'),
               "core_pool_size": b'1',
               "head_node": ip_graph[0],
@@ -389,7 +353,7 @@ if __name__ == "__main__":
     status = {}
     threads = []
 
- 
+    lock = threading.Lock()
     locks = [threading.Lock(), threading.Lock()]
     conditions = [threading.Condition() for i in range(len(devices) + 1)]
 

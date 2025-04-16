@@ -254,7 +254,7 @@ class ModelCard:
             self.residual_dependency_map = residual_dependency_map
         else:
             modules, checked_split_size = model_sharding(model,
-                                                         split_size,
+                                                        self.split_size,
                                                          transformer_model_option=self.transformer_model_option,
                                                          residual_connection=self.residual_connection,
                                                          debug_mod=False,
