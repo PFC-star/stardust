@@ -18,46 +18,10 @@ monitor_port = "34567"  # set server port to receive monitor info
 TIMEOUT = 15  # Time to wait for new devices to connect to servers
 MODEL_EXIST_ON_DEVICE = True  # set True if the model exists on the mobile device, will skip model creation and transmission
 runtime_option = False  # set True if the load balance is runtime
-split_size=2
+split_size=3
 task = "Generation"
 root_dir = os.path.dirname(os.path.abspath(__file__))
 residual_connection_option = True
-
-Quntization_Option=False
-
-
-def round_robin_module_arrangement(num_devices, num_modules):
-    arrangement = [[0 for _ in range(num_modules)] for _ in range(num_devices)]
-    modules_per_device = num_modules // num_devices
-    extra_modules = num_modules % num_devices
-    start = 0
-    for i in range(num_devices):
-        end = start + modules_per_device + (1 if i < extra_modules else 0)
-        for j in range(start, end):
-            arrangement[i][j] = 1
-        start = end
-    return np.array(arrangement)
-
-
-model_card = ModelCard('bloom1b1', quantization_option=Quntization_Option, task_type=task,
-                       residual_connection=residual_connection_option, load_balancing_option=False,
-                       split_size=split_size)
-
-# mem_util, out_size_map, bytearray_path, flop_module_path, num_flop, module_flop_map, num_modules \
-#     = model_card.prepare_optimization_info()
-
-initial_module_arrangement = round_robin_module_arrangement(2, split_size)
-# overlapping_module_arrangement = initial_module_arrangement  # Assuming no dynamic arrangement needed
-
-requested_model = 'bloom1b1'
-to_send_path = retrieve_sending_dir(root_dir, requested_model, quantization_option=Quntization_Option,
-                                            residual_connection=residual_connection_option)
-# initial_module_arrangement=[[1 ,1 ,1 ,1, 1, 1 ,1 ,1, 1, 1 ,1 ,1 ,1 ,1 ,1 ,1, 1 ,1 ,1 ,0 ,0 ,0 ,0 ,0, 0],
-#                             [0 ,0 ,0 ,0 ,0 ,0, 0, 0, 0 ,0 ,0, 0 ,0 ,0 ,0 ,0, 0 ,0 ,0 ,1 ,1 ,1, 1 ,1, 1 ]]
-print("initial_module_arrangement")
-print(initial_module_arrangement)
-
-model_dirs = model_card.prepare_model_to_send(module_arrangement=initial_module_arrangement)
 
 
 if __name__ == "__main__":
@@ -79,10 +43,23 @@ if __name__ == "__main__":
     ##################################################################################
     ####################### 1. Devices-Server Connection Section #####################
     ##################################################################################
+    last_received_time = time.time()  # 初始化接收时间
+    last_print_time = time.time()  # 初始化打印时间
+
     while continue_listening:
+        current_time = time.time()
+        # 每隔3秒打印一次当前时间
+        if current_time - last_print_time >= 3:
+            print(f"Current time: {current_time:.2f} seconds since epoch")
+            last_print_time = current_time  # 更新打印时间
         if send.poll(1000):
             print("start listening")
             identifier, action, msg_content = send.recv_multipart()
+
+            # 计算等待时间（从上次接收到消息到现在的时间差）
+            wait_time = current_time - last_received_time
+            print(f"Wait time: {wait_time:.2f} seconds")  # 打印等待时间，保留两位小数
+
             print(f"action: {action.decode()}")
             print(f"msg_content: {msg_content.decode()}")
             print("message received")
@@ -166,68 +143,55 @@ if __name__ == "__main__":
             # we can set "task_type" as "Classification" if it's needed.
             
             model_card = ModelCard(requested_model, quantization_option=Quntization_Option, task_type=task,
-                                   residual_connection=residual_connection_option, load_balancing_option=False)
+                                   residual_connection=residual_connection_option, load_balancing_option=False,split_size=split_size)
 
 
-            def round_robin_module_arrangement(num_devices, num_modules):
-                arrangement = [[0 for _ in range(num_modules)] for _ in range(num_devices)]
-                modules_per_device = num_modules // num_devices
-                extra_modules = num_modules % num_devices
-                start = 0
-                for i in range(num_devices):
-                    end = start + modules_per_device + (1 if i < extra_modules else 0)
-                    for j in range(start, end):
-                        arrangement[i][j] = 1
-                    start = end
-                return np.array(arrangement)
+
+            # mem_util, out_size_map, bytearray_path, flop_module_path, num_flop, module_flop_map, num_modules \
+            #     = model_card.prepare_optimization_info()
 
 
-            initial_module_arrangement = round_robin_module_arrangement(2, 2)
-            overlapping_module_arrangement = initial_module_arrangement  # Assuming no dynamic arrangement needed
-            print("initial_module_arrangement")
-            print(initial_module_arrangement)
 
-            model_dirs = model_card.prepare_model_to_send(module_arrangement=initial_module_arrangement)
-            mem_util, out_size_map, bytearray_path, flop_module_path, num_flop, module_flop_map, num_modules \
-                = model_card.prepare_optimization_info()
-            tokenizer_dir = model_card.retreive_tokenizer_path()
-            directory_path = os.path.dirname(bytearray_path)
+            # tokenizer_dir = model_card.retreive_tokenizer_path()
+            # directory_path = os.path.dirname(bytearray_path)
 
-            print(f'bytearray_path: {bytearray_path}')
+            # print(f'bytearray_path: {bytearray_path}')
             # print(f'flop_module_path: {flop_module_path}')
             # print(f'num_flop: {num_flop}')
             # print(f'out_size_map: {out_size_map}')
 
-            for ip in ip_graph_requested:
-                send.send_multipart([ip, b"ready for monitor"])
+            # for ip in ip_graph_requested:
+            #     send.send_multipart([ip, b"ready for monitor"])
 
-            # # start monitor
-            monitor = monitor.Monitor(monitor_receive_interval, monitor_port, devices, requested_model, \
-                                      bytearray_path, flop_module_path, num_flop, runtime_option)
-            thread = threading.Thread(target=monitor.start)
-            thread.start()
+            # # # start monitor
+            # monitor = monitor.Monitor(monitor_receive_interval, monitor_port, devices, requested_model, \
+            #                           bytearray_path, flop_module_path, num_flop, runtime_option)
+            # thread = threading.Thread(target=monitor.start)
+            # thread.start()
 
-            num_devices = len(devices)
-            monitor.is_monitor_ready.wait()
-            ping_latency, bandwidths, TotalMem, AvailMem, flop_speed = monitor.get_monitor_info()
-            
+            # num_devices = len(devices)
+            # monitor.is_monitor_ready.wait()
 
-            mem_threshold = .7  # set threshold for memory
-            TotalMem = [m * mem_threshold for m in TotalMem]
-            AvailMem = [m * mem_threshold for m in AvailMem]
-            print("-----------------Test Optimizer Function----------------------")
-            print("num_devices")
-            print(num_devices)
-            print("latency")
-            print(ping_latency)
-            print("bandwidth")
-            print(bandwidths)
-            print("totalMem")
-            print(TotalMem)
-            print("AvailMem")
-            print(AvailMem)
-            print("flop")
-            print(flop_speed)
+            # # 参数
+            # ping_latency, bandwidths, TotalMem, AvailMem, flop_speed = monitor.get_monitor_info()
+
+
+            # mem_threshold = .7  # set threshold for memory
+            # TotalMem = [m * mem_threshold for m in TotalMem]
+            # AvailMem = [m * mem_threshold for m in AvailMem]
+            # print("-----------------Test Optimizer Function----------------------")
+            # print("num_devices")
+            # print(num_devices)
+            # print("latency")
+            # print(ping_latency)
+            # print("bandwidth")
+            # print(bandwidths)
+            # print("totalMem")
+            # print(TotalMem)
+            # print("AvailMem")
+            # print(AvailMem)
+            # print("flop")
+            # print(flop_speed)
 
             if model_card.split_size:
                 print("model_card.split_size: ", model_card.split_size)
@@ -257,7 +221,7 @@ if __name__ == "__main__":
                     start = end
                 return np.array(arrangement)
 
-            initial_module_arrangement = round_robin_module_arrangement(2, 2)
+            initial_module_arrangement = round_robin_module_arrangement(split_size, split_size)
             overlapping_module_arrangement = initial_module_arrangement  # Assuming no dynamic arrangement needed
             print("initial_module_arrangement")
             print(initial_module_arrangement)
@@ -320,28 +284,25 @@ if __name__ == "__main__":
     print("------file_cfg--------")
     print(file_cfg)
 
-    for i in devices:
-        if i["role"]== "header":
-            headerIP=i["ip"]
-        if i["role"] == "worker":
-            workerIP = i["ip"]
 
     # 修改file_cfg json文件中的ip地址
-    if not Quntization_Option:
-        data = [
-            [str(headerIP), "/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom1b1_unquantized_res/device0/module0/module.zip"],
-            [str(workerIP), '/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom1b1_unquantized_res/device1/module1/module.zip']
-        ]
-    else:
-        data = [
-            [str(headerIP),
-             "/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom1b1_quantized_int8_res/device0/module0/module.zip"],
-            [str(workerIP),
-             '/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom1b1_quantized_int8_res/device1/module1/module.zip']
-        ]
+    pathLists = []
+    for index ,i in enumerate(devices):
+        ip = i["ip"]
+        role = i['role']
+
+        if not Quntization_Option:
+            pathList = [str(ip), "/workspace/ams-LinguaLinked-Inference//onnx_model__/to_send/bloom1b1_unquantized_res/device{}/module{}/module.zip".format(index,index)]
+
+        else:
+              pathList = [str(ip),
+                    "/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom1b1_quantized_int8_res/device{}/module{}/module.zip".format(
+                        index, index)]
+        pathLists.append(pathList)
+
     with open(os.path.join(to_send_path, 'ip_module.json'), 'w') as file:
 
-        json.dump(data, file)
+        json.dump(pathLists, file)
 
     with open(os.path.join(to_send_path, 'ip_module.json'), 'r') as file:
         ip_module_json = file.read()
@@ -355,11 +316,11 @@ if __name__ == "__main__":
 
     print(f'\ngraph: {ip_graph}')
     print(f"session index: {session}")
-    MODEL_EXIST_ON_DEVICE = False
+
     config = {"file_path": file_cfg,
-              "num_sample": b'1000',
+              "num_sample": b'10',       # batch_size
               "num_device": len(devices),
-              "max_length": b'40',
+              "max_length": b'60',
               "task_type": "generation".encode('utf-8'),
               "core_pool_size": b'1',
               "head_node": ip_graph[0],
@@ -399,6 +360,8 @@ if __name__ == "__main__":
 
     for t in threads:
         t.join()
+        if t.exception:
+            print(f"线程 {t.name} 出现异常: {t.exception}")
 
     send.close()
     context.term()

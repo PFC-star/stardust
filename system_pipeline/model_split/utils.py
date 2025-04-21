@@ -142,7 +142,7 @@ def model_sharding(model,
                    residual_connection=True,
                    debug_mod=False,
                    model_allocation=[],
-                   split_option="ratio"):
+                   split_option="fixed"):
     # control split
     split_size = split_size
     print("split_option : ",split_option)

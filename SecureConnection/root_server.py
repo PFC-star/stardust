@@ -35,12 +35,16 @@ def communication_open_close(sender, config, status, conditions, lock, open=True
     while True:
         print('enter communication open close')
         with lock[0]:
+            print('开始接收')
             info = sender.recv_multipart()
+
         client_id = info[0]
         msg = info[1]
         print(client_id + msg)
+        print("收到信号")
         ## Ready
         if open and msg == b'Ready':
+            print("Status Ready")
             ## Open
             if len(info) != 3:
                 print("Error")
@@ -60,7 +64,7 @@ def communication_open_close(sender, config, status, conditions, lock, open=True
                                     json.dumps(config["dependency"]).encode(),
                                     int_to_bytes(config['num_device']),
                                    ])
-
+            
             status[client_id] = b'Open'
             print(f"Status: Open {config['ids'][client_id]}")
 

@@ -112,9 +112,13 @@ if __name__ == "__main__":
     # read model request and conduct relevant model processing
     if requested_model:
         print(f'start preparing model: {requested_model}')
-        if requested_model == "bloom560m" or requested_model == "bloom1b1":
+        # if requested_model == "bloom560m" or requested_model == "bloom1b1":
+        #     Quntization_Option = False
+        # if requested_model == "bloom560m-int8":
+        #     Quntization_Option = True
+        if requested_model == "bloom3b" or requested_model == "bloom1b1":
             Quntization_Option = False
-        if requested_model == "bloom560m-int8":
+        if requested_model == "bloom3b-int8":
             Quntization_Option = True
 
         requested_model='bloom560m'

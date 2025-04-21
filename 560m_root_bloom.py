@@ -21,7 +21,7 @@ import traceback
 monitor_receive_interval = 10  # set intervals for receiving monitor info from clients
 monitor_port = "34567"  # set server port to receive monitor info
 TIMEOUT =10 # Time to wait for new devices to connect to servers
-MODEL_EXIST_ON_DEVICE = False  # set True if the model exists on the mobile device, will skip model creation and transmission
+MODEL_EXIST_ON_DEVICE = True  # set True if the model exists on the mobile device, will skip model creation and transmission
 runtime_option = False  # set True if the load balance is runtime
 split_size = 2
 device_number =2
@@ -40,7 +40,7 @@ class DevicePoolManager:
         # 使用线程安全的数据结构
         self.device_pool = deque()            # 全部已注册活跃设备池（非工作设备）
         self.working_devices = deque()        # 工作设备池（初始阶段注册的设备）
-        self.active_devices = {}              # {task_id: device_list} 当前活跃任务使用的设备
+        self.active_devices =    deque()         # {task_id: device_list} 当前活跃任务使用的设备
         self.failed_working_devices = deque() # 工作设备故障池
         self.failed_active_devices = deque()  # 活跃设备故障池
         self.task_counter = 0
@@ -126,7 +126,7 @@ class DevicePoolManager:
                     "info": device_info.copy()
                 }
                 print(f"更新设备状态: ID={device_id}, 状态={status}")
-                return True
+                return status
             
             # 设备不存在，需要添加
             if self.initialization_complete:
@@ -149,7 +149,7 @@ class DevicePoolManager:
             
             # 打印设备池状态
             self.printInfo()
-            return True
+            return status
             
         except Exception as e:
             print(f"设备注册时出错: {e}")
@@ -382,11 +382,11 @@ def handle_device_registration_and_heartbeat(socket, port):
                     
                     if not all([ip, role]):
                         print(f"警告: 设备注册信息不完整: {data}")
-                        socket.send_multipart([
-                            identifier,
-                            b"REGISTRATION_FAILED",
-                            b"Missing required fields"
-                        ])
+                        # socket.send_multipart([
+                        #     identifier,
+                        #     b"REGISTRATION_FAILED",
+                        #     b"Missing required fields"
+                        # ])
                         continue
                     
                     # 创建设备信息 - 使用唯一标识符的十六进制表示作为设备ID
@@ -409,16 +409,20 @@ def handle_device_registration_and_heartbeat(socket, port):
                         print(f"将设备标识符添加到ip_graph_requested")
                     
                     # 注册设备
-                    success = device_pool_manager.register_device(device)
-                    
+                    status = device_pool_manager.register_device(device)
+                    print("status:",status)
                     # 发送响应消息
                     try:
-                        if success:
+                        if status=="active":
                             # 发送是否需要监控的信号
-                            need_monitor = b"True" if not MODEL_EXIST_ON_DEVICE else b"False"
-                            socket.send(need_monitor)
-                        else:
-                            socket.send(b"False")
+                             
+                            socket.send_multipart([identifier, b"active"])
+                         
+                            print("发送 active")
+                        if status=="working":
+                            socket.send_multipart([identifier, b"working"])
+                            
+                            print("发送 working")
                     except zmq.error.ZMQError as e:
                         print(f"发送注册响应时出错: {e}")
                 
