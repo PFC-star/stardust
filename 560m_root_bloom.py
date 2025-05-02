@@ -432,26 +432,41 @@ def handle_device_registration_and_heartbeat(socket, port):
                     
                     if not device_id:
                         print("警告: 心跳消息缺少设备ID")
-                        socket.send(b"HEARTBEAT_FAILED")
+                        socket.send_multipart([identifier, b"HEARTBEAT_FAILED"])
                         continue
                     
                     # 更新心跳时间
                     success = device_pool_manager.update_device_heartbeat(device_id)
                     
-                    # 发送响应
+                    # 发送响应，包含系统状态信息
                     try:
                         if success:
-                            socket.send(b"HEARTBEAT_RECEIVED")
+                            # 检查系统是否有故障
+                            system_has_failures = (
+                                len(device_pool_manager.failed_working_devices) > 0 or 
+                                len(device_pool_manager.failed_active_devices) > 0
+                            )
+                            
+                            if system_has_failures:
+                                # 返回故障状态，通知客户端系统有故障
+                                socket.send_multipart([identifier, b"HEARTBEAT_RECEIVED", b"SYSTEM_FAILURE"])
+                                print(f"设备 {device_id} 心跳响应：系统存在故障")
+                                # 服务器端也进入故障处理流程
+                                handle_system_failure()
+                            else:
+                                # 系统正常
+                                socket.send_multipart([identifier, b"HEARTBEAT_RECEIVED", b"SYSTEM_NORMAL"])
+                                print(f"设备 {device_id} 心跳响应：系统正常")
                         else:
-                            socket.send(b"HEARTBEAT_FAILED")
+                            socket.send_multipart([identifier, b"HEARTBEAT_FAILED"])
+                            print(f"设备 {device_id} 心跳更新失败")
                     except zmq.error.ZMQError as e:
                         print(f"发送心跳响应时出错: {e}")
                 
                 else:
                     print(f"未知的消息类型: {action}")
                     try:
-                        pass
-                        # socket.send(b"UNKNOWN_ACTION")
+                        socket.send_multipart([identifier, b"UNKNOWN_ACTION"])
                     except zmq.error.ZMQError as e:
                         print(f"发送未知动作响应时出错: {e}")
                     
@@ -473,6 +488,21 @@ def handle_device_registration_and_heartbeat(socket, port):
         traceback.print_exc()
     finally:
         print("设备注册和心跳服务已停止")
+
+def handle_system_failure():
+    """
+    系统故障处理函数
+    当检测到系统中有设备故障时调用此函数
+    """
+    print("系统故障处理开始...")
+    # 故障处理逻辑将在这里实现
+    # 1.确定是哪一个设备故障了
+    # 2.使用活跃设备池中的一个设备代替此故障设备，假设设备2故障，使用活跃池的设备3代替
+    # 3.修改config等的信息
+    # 4.使用34567端口发送故障控制信息（1.发送新的IP图   config["graph"],
+    #                                 config["session_index"],
+    # 5.发送成功之后，恢复推理）
+    pass
 
 def main():
     """主函数，包含设备注册、模型分割和发送功能"""
