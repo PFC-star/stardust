@@ -6,6 +6,7 @@ import zmq
 from SecureConnection import root_server
 from SecureConnection import server
 from SecureConnection import monitor
+from SecureConnection.root_server import int_to_bytes,communication_prepare
 import threading
 import torch
 import numpy as np
@@ -17,9 +18,10 @@ from util.model_card import available_models, ModelCard, retrieve_sending_dir, r
 from system_pipeline.onnx_backend.optimization import Optimizer
 import socket
 import traceback
-
+import datetime
 monitor_receive_interval = 10  # set intervals for receiving monitor info from clients
 monitor_port = "34567"  # set server port to receive monitor info
+active_device_port = "23457"  # port for active device communication
 TIMEOUT =10 # Time to wait for new devices to connect to servers
 MODEL_EXIST_ON_DEVICE = True  # set True if the model exists on the mobile device, will skip model creation and transmission
 runtime_option = False  # set True if the load balance is runtime
@@ -33,6 +35,131 @@ residual_connection_option = True
 all_devices_pool = deque()  # 全局设备池，存储所有已注册的设备
 active_tasks = {}  # 格式: {task_id: {"devices": devices_list, "status": status}}
 devices_pool_lock = threading.Lock()  # 设备池的线程锁
+device_identifiers_map = {}  # 存储设备ID与其ZMQ标识符的映射: {device_id: identifier}
+device_identifiers_lock = threading.Lock()  # 标识符映射的线程锁
+
+# 定义活跃设备的通信函数
+def communication_open_close_active(sender, config, device_id, status, lock, open=True):
+    """
+    处理活跃设备的控制信息交换
+    类似于communication_open_close但专门用于活跃设备
+    """
+    client_id = None
+    with device_identifiers_lock:
+        if device_id in device_identifiers_map:
+            client_id = device_identifiers_map[device_id]
+    
+    if not client_id:
+        print(f"错误: 无法找到设备 {device_id} 的标识符")
+        return
+    
+    device_ip = None
+    for device in device_pool_manager.active_devices:
+        if device.get("device_id") == device_id:
+            device_ip = device.get("ip")
+            break
+    
+    if not device_ip:
+        print(f"错误: 无法找到设备 {device_id} 的IP地址")
+        return
+    
+    print(f"开始活跃设备 {device_id} ({device_ip}) 的通信线程")
+    
+    # 设置长超时时间 (30秒)
+    original_timeout = sender.getsockopt(zmq.RCVTIMEO)
+    sender.setsockopt(zmq.RCVTIMEO, 30000)  # 设置为30秒
+    
+    try:
+        while True:
+            print('enter communication open close active')
+            with lock[0]:
+                print('开始接收')
+                try:
+                    info = sender.recv_multipart()  # 使用阻塞方式，但有30秒超时
+                except zmq.error.Again:
+                    # 超时后继续尝试
+                    print(f"活跃设备 {device_id} 接收超时，继续等待...")
+                    continue
+            
+            # 以下是成功接收到消息的处理
+            client_id = info[0]
+            msg = info[1]
+            print(client_id + msg)
+            print("收到信号")
+            
+            ## Ready
+            if open and msg == b'Ready':
+                print("Status Ready")
+                ## Open
+                if len(info) != 3:
+                    print("Error")
+                
+                config["ids"][client_id] = info[2]
+                print(config["ids"])
+                
+                status[client_id] = b'Ready'
+                
+                sender.send_multipart([client_id, b'Open',
+                                      config["graph"],
+                                      config["session_index"],
+                                      config["task_type"],
+                                      config["core_pool_size"],
+                                      config["num_sample"],
+                                      config["max_length"],
+                                      json.dumps(config["dependency"]).encode(),
+                                      int_to_bytes(config['num_device']),
+                                     ])
+                
+                status[client_id] = b'Open'
+                print(f"Status: Open {config['ids'][client_id]}")
+                
+                ## Prepare
+                sender.send_multipart([client_id, b'Prepare'])
+                status[client_id] = b"Prepare"
+                # communication_prepare(sender, config, client_id, status)
+                
+                print(f"Status: Prepare {config['ids'][client_id]}")
+            
+            ## Initialized
+            elif msg == b'Initialized':
+                status[client_id] = b'Initialized'
+                print(f"Status: Initialized {config['ids'][client_id]}")
+                
+                ## Start
+                sender.send_multipart([client_id, b"WaitingStart"])
+                status[client_id] = b'WaitingStart'
+                
+                print(f"Status: WaitingStart {config['ids'][client_id]}")
+            
+            elif msg == b'Finish':
+                status[client_id] = b'Close'
+                
+                sender.send_multipart([client_id, b"Close"])
+                print(f"Close {config['ids'][client_id]}")
+                break
+            
+            elif msg == b'Recovery':
+                status[client_id] = b'Recovery'
+                print(f"Status: Recovery {config['ids'][client_id]}")
+                sender.send_multipart([client_id,
+                                      config["graph"],
+                                      config["session_index"],
+                                    ])
+            
+            elif msg == b'RecoveryInference':
+                status[client_id] = b'RecoveryInference'
+                print(f"Status: RecoveryInference {config['ids'][client_id]}")
+    
+    except Exception as e:
+        print(f"活跃设备 {device_id} 通信线程出错: {e}")
+        traceback.print_exc()
+    finally:
+        # 恢复原来的超时设置
+        try:
+            sender.setsockopt(zmq.RCVTIMEO, original_timeout)
+        except:
+            pass
+        print(f"活跃设备 {device_id} 通信线程结束")
 
 # 添加设备池管理类
 class DevicePoolManager:
@@ -48,15 +175,16 @@ class DevicePoolManager:
         # 使用原子操作来管理设备状态
         self.device_status = {}  # {device_id: {status, last_heartbeat, info}}
         self.device_heartbeats = {}           # 记录设备最后心跳时间
-        self.heartbeat_timeout = 30           # 心跳超时时间(秒)
+        self.heartbeat_timeout = 60           # 心跳超时时间(秒)
         self.heartbeat_check_interval = 10    # 心跳检查间隔(秒)
         self.initialization_complete = False  # 标记是否完成初始化阶段
-    
+        self.active_device_threads = {}       # 存储活跃设备通信线程
+
     def set_initialization_complete(self):
         """标记初始化阶段已完成，将当前设备池中的设备设为工作设备"""
         # 使用原子操作来更新设备池
-        self.working_devices = deque(self.device_pool)
-        self.device_pool.clear()
+        # self.working_devices = deque(self.device_pool)
+        # self.device_pool.clear()
         self.initialization_complete = True
         
         print(f"初始化阶段完成！共有 {len(self.working_devices)} 个工作设备")
@@ -110,7 +238,7 @@ class DevicePoolManager:
             
             # 如果不在工作设备池中，检查活跃设备池
             if not device_exists:
-                for device in self.device_pool:
+                for device in self.active_devices:
                     if device.get("device_id") == device_id:
                         device.update(device_info)
                         device_exists = True
@@ -134,9 +262,12 @@ class DevicePoolManager:
                 self.active_devices.append(device_info)
                 status = "active"
                 print(f"运行阶段 - 新设备已注册为活跃设备: ID={device_id}, IP={ip}")
+                
+                # 为新注册的活跃设备创建通信线程
+                self.start_active_device_thread(device_id)
             else:
-                # 初始化阶段，添加到设备池
-                self.device_pool.append(device_info)
+                # 初始化阶段，添加到工作设备池
+                self.working_devices.append(device_info)
                 status = "working"
                 print(f"初始化阶段 - 新设备已注册为工作设备: ID={device_id}, IP={ip}, 角色={device_info.get('role')}")
             
@@ -156,6 +287,124 @@ class DevicePoolManager:
             import traceback
             traceback.print_exc()
             return False
+    
+    def start_active_device_thread(self, device_id):
+        """为活跃设备启动控制通信线程"""
+        try:
+            # 检查线程是否已经存在
+            if device_id in self.active_device_threads and self.active_device_threads[device_id].is_alive():
+                print(f"活跃设备 {device_id} 已有通信线程在运行")
+                return
+            
+            # 创建状态字典
+            if not hasattr(self, 'active_device_status'):
+                self.active_device_status = {}
+            
+            # 状态将在通信过程中由消息交换决定，不预先设置
+            
+            # 获取活跃设备信息
+            active_device_info = None
+            for device in self.active_devices:
+                if device.get("device_id") == device_id:
+                    active_device_info = device
+                    break
+            
+            if not active_device_info:
+                print(f"错误: 无法找到活跃设备 {device_id} 的信息")
+                return
+            
+            # 获取头节点（工作设备池的第一个设备）
+            head_device = None
+            if self.working_devices:
+                head_device = self.working_devices[0]
+            else:
+                print(f"警告: 工作设备池为空，无法确定头节点")
+                return
+            
+            # 首先获取原始的ip_module信息
+            active_device_ip = active_device_info.get("ip", "")
+            
+            # 获取全局配置
+            global config, root_dir
+            
+            # 确定模型名称和量化选项
+            model_name = "bloom560m"
+            quantization_option = True  # 默认使用量化模型 (int8)
+            
+            # 创建修改后的ip_module，将第二个IP替换为活跃设备的IP
+            modified_ip_module = [
+                [head_device.get("ip", ""), f"/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_quantized_int8_res/device0/module0/module.zip"],
+                [active_device_ip, f"/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_quantized_int8_res/device1/module1/module.zip"]
+            ]
+            
+            print(f"为活跃设备 {device_id} 创建修改后的ip_module:")
+            print(modified_ip_module)
+            
+            # 获取送信目录
+            to_send_path = retrieve_sending_dir(root_dir, model_name, 
+                                           quantization_option=quantization_option,
+                                           residual_connection=residual_connection_option)
+            
+            # 使用retrieve_file_cfg获取文件配置
+            file_cfg = retrieve_file_cfg(modified_ip_module)
+            
+            # 使用retrieve_sending_info获取图和依赖信息
+            ip_graph, dependencyMap = retrieve_sending_info(
+                root_dir, model_name, 
+                ip_module_list=modified_ip_module,
+                quantization_option=quantization_option,
+                residual_connection=residual_connection_option
+            )
+            
+            # 创建会话索引
+            session = ["0", "1"]  # 简单的会话索引
+            
+            # 创建预填充的device_config
+            device_config = {
+                "device_id": device_id,
+                "ids": {}, 
+                "file_path": file_cfg,
+                "head_node": ip_graph[0],
+                "tail_node": ip_graph[-1],
+                "graph": ",".join(ip_graph).encode('utf-8'),
+                "session_index": ";".join(session).encode('utf-8'),
+                "task_type": b"generation",
+                "core_pool_size": b"1",
+                "num_sample": b"100",
+                "max_length": b"40",
+                "num_device": 2,  # 头节点和活跃设备共2个
+                "skip_model_transmission": True,
+                "dependency": dependencyMap
+            }
+            
+            # # 添加设备ID映射
+            # device_config["ids"][head_device.get("device_id", "")] = head_device.get("ip", "").encode('utf-8')
+            # device_config["ids"][device_id] = active_device_ip.encode('utf-8')
+            
+            # 打印生成的配置信息
+            print(f"为活跃设备 {device_id} 创建预填充配置:")
+            print(f"  头节点: {device_config['head_node']}")
+            print(f"  尾节点: {device_config['tail_node']}")
+            print(f"  IP图: {device_config['graph']}")
+            print(f"  会话索引: {device_config['session_index']}")
+            
+            # 创建通信线程
+            global active_socket
+            thread = threading.Thread(
+                target=communication_open_close_active,
+                args=(active_socket, device_config, device_id, self.active_device_status, [threading.Lock(), threading.Lock()]),
+                daemon=True
+            )
+            thread.name = f"ActiveDevice-{device_id}"
+            thread.start()
+            
+            # 保存线程引用
+            self.active_device_threads[device_id] = thread
+            print(f"已为活跃设备 {device_id} 启动通信线程")
+            
+        except Exception as e:
+            print(f"为活跃设备 {device_id} 启动通信线程时出错: {e}")
+            traceback.print_exc()
     
     def update_device_heartbeat(self, device_id):
         """更新设备心跳时间，使用原子操作"""
@@ -179,7 +428,8 @@ class DevicePoolManager:
             if time_diff > self.heartbeat_timeout / 2:
                 print(f"警告: 设备 {device_id} 心跳间隔较长: {time_diff:.1f}秒")
             else:
-                print(f"设备 {device_id} 心跳更新: {time_diff:.1f}秒前")
+                pass
+                # print(f"设备 {device_id} 心跳更新: {time_diff:.1f}秒前")
         else:
             print(f"设备 {device_id} 首次心跳记录")
         
@@ -188,10 +438,14 @@ class DevicePoolManager:
     def printInfo(self):
         print("\n设备池状态:")
         print(f"工作设备: {len(self.working_devices)}个")
-        print(f"活跃设备: {len(self.device_pool)}个")
+        print(f"活跃设备: {len(self.active_devices)}个")
         print(f"工作设备故障: {len(self.failed_working_devices)}个") 
         print(f"活跃设备故障: {len(self.failed_active_devices)}个")
         print(f"初始化状态: {'已完成' if self.initialization_complete else '未完成'}")
+        # 打印活跃设备线程状态
+        if hasattr(self, 'active_device_threads') and self.active_device_threads:
+            active_threads = sum(1 for t in self.active_device_threads.values() if t.is_alive())
+            print(f"活跃设备通信线程: {active_threads}/{len(self.active_device_threads)}个")
 
 # 创建设备池管理器实例
 device_pool_manager = DevicePoolManager()
@@ -204,6 +458,7 @@ def heartbeat_check_thread():
     ))
     
     consecutive_empty_checks = 0
+    already_processed_failures = set()  # 用于跟踪已经处理过的故障设备
     
     while True:
         try:
@@ -213,7 +468,7 @@ def heartbeat_check_thread():
             # 获取故障前的设备状态
             before_count = {
                 'working': len(device_pool_manager.working_devices),
-                'active': len(device_pool_manager.device_pool),
+                'active': len(device_pool_manager.active_devices),
                 'failed_working': len(device_pool_manager.failed_working_devices),
                 'failed_active': len(device_pool_manager.failed_active_devices)
             }
@@ -225,22 +480,37 @@ def heartbeat_check_thread():
             for device_id, last_heartbeat in list(device_pool_manager.device_heartbeats.items()):
                 heartbeat_age = current_time - last_heartbeat
                 
-                # 如果设备心跳超时，标记为失败
-                if heartbeat_age > device_pool_manager.heartbeat_timeout:
+                # 获取当前设备状态，确保不会有累积的状态前缀
+                current_status = device_pool_manager.device_status.get(device_id, {}).get("status", "unknown")
+                # 清除可能的重复 failed_ 前缀
+                if current_status.startswith("failed_failed_"):
+                    clean_status = "failed_" + current_status.split("failed_")[-1]
+                    device_pool_manager.device_status[device_id]["status"] = clean_status
+                    current_status = clean_status
+                
+                # 如果设备心跳超时且不是已经处理过的故障设备，标记为失败
+                if heartbeat_age > device_pool_manager.heartbeat_timeout and device_id not in already_processed_failures:
                     # 确定设备在哪个池
-                    device_status = device_pool_manager.device_status.get(device_id, {}).get("status", "unknown")
                     device_info = device_pool_manager.device_status.get(device_id, {}).get("info", {})
                     
-                    print(f"设备 {device_id} 心跳超时 ({heartbeat_age:.1f}秒)，当前状态: {device_status}")
+                    print(f"设备 {device_id} 心跳超时 ({heartbeat_age:.1f}秒)，当前状态: {current_status}")
                     
-                    if device_info:
+                    if device_info and not current_status.startswith("failed_"):
                         # 添加失败信息
                         device_info["failure_time"] = current_time
                         device_info["failure_reason"] = f"心跳超时 ({heartbeat_age:.1f}秒)"
-                        failed_devices.append((device_id, device_status, device_info.copy()))
+                        failed_devices.append((device_id, current_status, device_info.copy()))
+                    
+                    # 将设备添加到已处理集合中，避免重复处理
+                    already_processed_failures.add(device_id)
+                elif heartbeat_age <= device_pool_manager.heartbeat_timeout and current_status.startswith("failed_"):
+                    # 设备恢复正常，从已处理集合中移除
+                    if device_id in already_processed_failures:
+                        already_processed_failures.remove(device_id)
+                    print(f"设备 {device_id} 已恢复正常 ({heartbeat_age:.1f}秒)，之前状态: {current_status}")
+                    # 这里可以添加设备恢复的逻辑
                 else:
-                    device_status = device_pool_manager.device_status.get(device_id, {}).get("status", "unknown")
-                    print(f"设备 {device_id} 心跳正常 ({heartbeat_age:.1f}秒)，当前状态: {device_status}")
+                    print(f"设备 {device_id} 心跳正常 ({heartbeat_age:.1f}秒)，当前状态: {current_status}")
             
             # 处理超时设备，使用原子操作
             failures_count = 0
@@ -258,22 +528,23 @@ def heartbeat_check_thread():
                             break
                 elif status == "active":
                     # 从活跃设备池中移除
-                    for i, device in enumerate(device_pool_manager.device_pool):
+                    for i, device in enumerate(device_pool_manager.active_devices):
                         if device.get("device_id") == device_id:
-                            device_pool_manager.device_pool.remove(device)
+                            device_pool_manager.active_devices.remove(device)
                             device_pool_manager.failed_active_devices.append(device_info)
                             print(f"活跃设备 {device_id} 已移至故障池")
                             failures_count += 1
                             break
                 
-                # 更新设备状态
+                # 更新设备状态，确保状态前缀不会累积
                 if device_id in device_pool_manager.device_status:
-                    device_pool_manager.device_status[device_id]["status"] = f"failed_{status}"
+                    base_status = status.split("_")[-1] if "_" in status else status
+                    device_pool_manager.device_status[device_id]["status"] = f"failed_{base_status}"
             
             # 获取故障后的设备状态
             after_count = {
                 'working': len(device_pool_manager.working_devices),
-                'active': len(device_pool_manager.device_pool),
+                'active': len(device_pool_manager.active_devices),
                 'failed_working': len(device_pool_manager.failed_working_devices),
                 'failed_active': len(device_pool_manager.failed_active_devices)
             }
@@ -328,6 +599,9 @@ def handle_device_registration_and_heartbeat(socket, port):
         # 配置套接字超时，防止阻塞操作
         socket.setsockopt(zmq.RCVTIMEO, 1000)  # 1秒接收超时
         socket.setsockopt(zmq.SNDTIMEO, 1000)  # 1秒发送超时
+        
+        # 创建一个标志，表示系统是否正在进行故障处理
+        system_handling_failure = False
         
         while True:
             try:
@@ -392,6 +666,11 @@ def handle_device_registration_and_heartbeat(socket, port):
                     # 创建设备信息 - 使用唯一标识符的十六进制表示作为设备ID
                     device_id = identifier.hex() if isinstance(identifier, bytes) else str(identifier)
                     
+                    # 保存设备的标识符，用于后续通信
+                    with device_identifiers_lock:
+                        device_identifiers_map[device_id] = identifier
+                        print(f"设备标识符已保存: {device_id}")
+                    
                     device = {
                         "device_id": device_id,
                         "ip": ip,
@@ -430,6 +709,10 @@ def handle_device_registration_and_heartbeat(socket, port):
                     # 处理心跳消息 - 使用唯一标识符的十六进制表示作为设备ID
                     device_id = identifier.hex() if isinstance(identifier, bytes) else str(identifier)
                     
+                    # 更新设备标识符映射
+                    with device_identifiers_lock:
+                        device_identifiers_map[device_id] = identifier
+                    
                     if not device_id:
                         print("警告: 心跳消息缺少设备ID")
                         socket.send_multipart([identifier, b"HEARTBEAT_FAILED"])
@@ -441,27 +724,128 @@ def handle_device_registration_and_heartbeat(socket, port):
                     # 发送响应，包含系统状态信息
                     try:
                         if success:
-                            # 检查系统是否有故障
-                            system_has_failures = (
-                                len(device_pool_manager.failed_working_devices) > 0 or 
-                                len(device_pool_manager.failed_active_devices) > 0
-                            )
-                            
-                            if system_has_failures:
-                                # 返回故障状态，通知客户端系统有故障
-                                socket.send_multipart([identifier, b"HEARTBEAT_RECEIVED", b"SYSTEM_FAILURE"])
-                                print(f"设备 {device_id} 心跳响应：系统存在故障")
-                                # 服务器端也进入故障处理流程
-                                handle_system_failure()
+                            # 检查系统是否有故障，但避免在故障处理过程中重复检测
+                            if not system_handling_failure:
+                                system_has_failures = (
+                                    len(device_pool_manager.failed_working_devices) > 0 or 
+                                    len(device_pool_manager.failed_active_devices) > 0
+                                )
+                                
+                                if system_has_failures:
+                                    # 设置故障处理标志，避免重复触发
+                                    system_handling_failure = True
+                                    
+                                    # 先通知当前心跳的设备
+                                    socket.send_multipart([identifier, b"HEARTBEAT_RECEIVED", b"SYSTEM_FAILURE"])
+                                    print(f"设备 {device_id} 心跳响应：系统存在故障")
+                                    
+                                    # 异步触发故障处理，避免阻塞心跳响应线程
+                                    def trigger_failure_handling():
+                                        try:
+                                            # 先通知所有在线设备系统故障状态
+                                            notify_all_devices = []
+                                            device_identifiers = {}
+                                            
+                                            # 收集所有在线设备的标识符
+                                            with device_identifiers_lock:
+                                                for dev_id, dev_identifier in device_identifiers_map.items():
+                                                    # 排除当前已通知的设备
+                                                    if dev_id != device_id:
+                                                        notify_all_devices.append(dev_id)
+                                                        device_identifiers[dev_id] = dev_identifier
+                                            
+                                            print(f"正在通知其他 {len(notify_all_devices)} 个设备系统故障状态...")
+                                            
+                                            # 发送故障通知给所有收集到的设备
+                                            for dev_id in notify_all_devices:
+                                                try:
+                                                    dev_identifier = device_identifiers[dev_id]
+                                                    socket.send_multipart([dev_identifier, b"HEARTBEAT_RECEIVED", b"SYSTEM_FAILURE"])
+                                                    print(f"通知设备 {dev_id} 系统故障状态")
+                                                except Exception as e:
+                                                    print(f"通知设备 {dev_id} 失败: {e}")
+                                            
+                                            # 服务器端进入故障处理流程
+                                            handle_system_failure()
+                                            
+                                            # 故障处理完成后，重置标志
+                                            nonlocal system_handling_failure
+                                            system_handling_failure = False
+                                        except Exception as e:
+                                            print(f"故障处理过程中出错: {e}")
+                                            system_handling_failure = False  # 确保出错时也重置标志
+                                    
+                                    # 启动一个线程进行故障处理
+                                    failure_thread = threading.Thread(target=trigger_failure_handling)
+                                    failure_thread.daemon = True
+                                    failure_thread.start()
+                                else:
+                                    # 系统正常
+                                    socket.send_multipart([identifier, b"HEARTBEAT_RECEIVED", b"SYSTEM_NORMAL"])
+                                    # print(f"设备 {device_id} 心跳响应：系统正常")
                             else:
-                                # 系统正常
-                                socket.send_multipart([identifier, b"HEARTBEAT_RECEIVED", b"SYSTEM_NORMAL"])
-                                print(f"设备 {device_id} 心跳响应：系统正常")
+                                # 系统正在处理故障，告知客户端等待
+                                socket.send_multipart([identifier, b"HEARTBEAT_RECEIVED", b"SYSTEM_HANDLING_FAILURE"])
+                                print(f"设备 {device_id} 心跳响应：系统正在处理故障")
                         else:
                             socket.send_multipart([identifier, b"HEARTBEAT_FAILED"])
                             print(f"设备 {device_id} 心跳更新失败")
                     except zmq.error.ZMQError as e:
                         print(f"发送心跳响应时出错: {e}")
+                
+                # 处理故障恢复确认
+                elif action == "FAILURE_RECOVERY_ACK":
+                    device_id = identifier.hex() if isinstance(identifier, bytes) else str(identifier)
+                    client_ip = config["ids"].get(identifier, b"unknown").decode() if isinstance(config["ids"].get(identifier), bytes) else config["ids"].get(identifier, "unknown")
+                    print(f"设备 {client_ip} (ID: {device_id}) 确认收到故障恢复信号")
+                    
+                    # 记录确认状态
+                    if "recovery_acks" not in config:
+                        config["recovery_acks"] = {}
+                    config["recovery_acks"][device_id] = True
+                    
+                    # 检查是否所有设备都已确认
+                    expected_count = len(config["ids"]) - sum(1 for ip in config["ids"].values() 
+                                                    if (ip.decode() if isinstance(ip, bytes) else ip) in config.get("failed_ips", []))
+                    ack_count = len(config["recovery_acks"])
+                    
+                    print(f"故障恢复进度: {ack_count}/{expected_count} 设备已确认")
+                    
+                    # 当所有预期的设备都已确认时，可以清除故障状态
+                    if ack_count >= expected_count:
+                        print("所有设备已确认故障恢复，清除系统故障状态")
+                        if "system_status" in config:
+                            del config["system_status"]
+                        if "recovery_status" in config:
+                            del config["recovery_status"]
+                        if "failed_ips" in config:
+                            del config["failed_ips"]
+                        if "recovery_acks" in config:
+                            del config["recovery_acks"]
+                    
+                    # 回复确认收到
+                    socket.send_multipart([identifier, b"RECOVERY_ACK_RECEIVED"])
+                
+                # 处理无替代设备情况的确认
+                elif action == "SYSTEM_FAILURE_NO_REPLACEMENT_ACK":
+                    device_id = identifier.hex() if isinstance(identifier, bytes) else str(identifier)
+                    client_ip = config["ids"].get(identifier, b"unknown").decode() if isinstance(config["ids"].get(identifier), bytes) else config["ids"].get(identifier, "unknown")
+                    print(f"设备 {client_ip} (ID: {device_id}) 确认收到系统故障通知(无替代设备)")
+                    
+                    # 记录确认状态
+                    if "suspended_acks" not in config:
+                        config["suspended_acks"] = {}
+                    config["suspended_acks"][device_id] = True
+                    
+                    # 检查是否所有设备都已确认
+                    expected_count = len(config["ids"]) - sum(1 for ip in config["ids"].values() 
+                                                    if (ip.decode() if isinstance(ip, bytes) else ip) in config.get("failed_ips", []))
+                    ack_count = len(config["suspended_acks"])
+                    
+                    print(f"系统暂停进度: {ack_count}/{expected_count} 设备已确认")
+                    
+                    # 回复确认收到
+                    socket.send_multipart([identifier, b"SUSPENSION_ACK_RECEIVED"])
                 
                 else:
                     print(f"未知的消息类型: {action}")
@@ -495,20 +879,187 @@ def handle_system_failure():
     当检测到系统中有设备故障时调用此函数
     """
     print("系统故障处理开始...")
-    # 故障处理逻辑将在这里实现
-    # 1.确定是哪一个设备故障了
-    # 2.使用活跃设备池中的一个设备代替此故障设备，假设设备2故障，使用活跃池的设备3代替
-    # 3.修改config等的信息
-    # 4.使用34567端口发送故障控制信息（1.发送新的IP图   config["graph"],
-    #                                 config["session_index"],
-    # 5.发送成功之后，恢复推理）
-    pass
+    global config, ip_graph, session
+    
+    # 确保traceback已导入
+    import traceback
+    
+    # 记录开始处理时间
+    start_time = datetime.datetime.now()
+    print(f"故障处理开始时间: {start_time}")
+    
+    # 不再创建新的communication_socket，而是使用现有的套接字
+    # 现有套接字会在communication_open_close函数的循环中使用
+    
+    try:
+        # 1.确定是哪一个设备故障了
+        failed_devices = []
+        
+        # 检查工作设备池中的故障设备
+        for device in list(device_pool_manager.failed_working_devices):
+            failed_devices.append(device)
+            print(f"发现故障工作设备: ID={device.get('device_id')}, IP={device.get('ip')}, 角色={device.get('role')}")
+        
+        if not failed_devices:
+            print("没有检测到故障设备，不需要进行故障处理")
+            return
+        
+        # 如果没有config或者主要变量，表示系统尚未完成初始化
+        if not 'config' in globals() or config is None:
+            print("系统尚未完成初始化，无法进行故障处理")
+            return
+            
+        print(f"开始处理 {len(failed_devices)} 个故障设备...")
+        
+        # 构建故障IP列表，保存到config中
+        failed_ips = [device.get('ip') for device in failed_devices]
+        config["failed_ips"] = failed_ips
+        
+        # 2.使用活跃设备池中的设备代替故障设备
+        replacement_mapping = {}  # {故障设备IP: 替代设备信息}
+        
+        # 检查活跃设备池是否为空
+        if not device_pool_manager.active_devices:
+            print("警告: 活跃设备池为空，无法提供替代设备")
+            # 虽然无法替换设备，但仍然通知所有运行中的设备有设备故障发生
+            try:
+                # 设置config中的状态为需要恢复
+                config["system_status"] = "RECOVERY_NEEDED"
+                config["recovery_status"] = "NO_REPLACEMENT"
+                print("系统已标记为需要恢复但无替代设备，通过通信循环通知客户端")
+                
+                # 即使无法替换设备，也清空故障池，避免反复触发故障处理
+                print("清空故障设备池，防止重复处理...")
+                device_pool_manager.failed_working_devices.clear()
+                device_pool_manager.failed_active_devices.clear()
+                
+                # 重置设备状态
+                for device in failed_devices:
+                    device_id = device.get("device_id")
+                    if device_id in device_pool_manager.device_status:
+                        print(f"重置设备 {device_id} 的状态")
+                        device_pool_manager.device_status[device_id]["status"] = "inactive"
+                
+                return
+            except Exception as e:
+                print(f"设置故障恢复状态时出错: {e}")
+                traceback.print_exc()
+                return
+        
+        for failed_device in failed_devices:
+            failed_ip = failed_device.get("ip")
+            failed_role = failed_device.get("role")
+            failed_idx = -1
+            
+            # 找出故障设备在IP图中的位置
+            for i, ip in enumerate(ip_graph):
+                if ip == failed_ip:
+                    failed_idx = i
+                    break
+            
+            if failed_idx == -1:
+                print(f"警告: 故障设备 {failed_ip} 不在IP图中，跳过")
+                continue
+            
+            # 从活跃设备池中选择一个设备作为替代
+            replacement_device = None
+            
+            if device_pool_manager.active_devices:
+                # 从活跃设备池中选择第一个设备
+                replacement_device = device_pool_manager.active_devices.popleft()
+                print(f"使用活跃设备 {replacement_device.get('ip')} 替代故障设备 {failed_ip}")
+                
+                # 更新替代设备的角色与故障设备一致
+                replacement_device["role"] = failed_role
+                
+                # 添加到替换映射
+                replacement_mapping[failed_ip] = replacement_device
+            else:
+                print(f"错误: 活跃设备池为空，无法为故障设备 {failed_ip} 找到替代设备")
+                # 设置系统需要恢复但无替代设备
+                config["system_status"] = "RECOVERY_NEEDED"
+                config["recovery_status"] = "NO_REPLACEMENT"
+                return
+        
+        if not replacement_mapping:
+            print("没有可用的替代设备，故障处理失败")
+            config["system_status"] = "RECOVERY_NEEDED"
+            config["recovery_status"] = "NO_REPLACEMENT"
+            return
+        
+        # 3.修改config等的信息
+        new_ip_graph = ip_graph.copy()
+        new_session = session.copy()
+        
+        # 更新IP图
+        for old_ip, new_device in replacement_mapping.items():
+            new_ip = new_device.get("ip")
+            
+            # 在IP图中替换
+            for i, ip in enumerate(new_ip_graph):
+                if ip == old_ip:
+                    new_ip_graph[i] = new_ip
+                    print(f"IP图替换: {old_ip} -> {new_ip} 在位置 {i}")
+            
+            # 在config中的ids中替换
+            for client_id, device_ip in config["ids"].items():
+                if device_ip.decode() if isinstance(device_ip, bytes) else device_ip == old_ip:
+                    config["ids"][client_id] = new_ip.encode() if isinstance(device_ip, bytes) else new_ip
+                    print(f"配置IDs替换: {old_ip} -> {new_ip}")
+            
+            # 更新头尾节点（如果需要）
+            if config["head_node"] == old_ip:
+                config["head_node"] = new_ip
+                print(f"头节点替换: {old_ip} -> {new_ip}")
+                
+            if config["tail_node"] == old_ip:
+                config["tail_node"] = new_ip
+                print(f"尾节点替换: {old_ip} -> {new_ip}")
+        
+        # 构建新的配置更新
+        config["graph"] = ",".join(new_ip_graph).encode('utf-8')
+        config["session_index"] = ";".join(new_session).encode('utf-8')
+        
+        print("配置已更新:")
+        print(f"新IP图: {new_ip_graph}")
+        print(f"新会话索引: {new_session}")
+        
+        # 4.准备通过现有通信循环发送故障控制信息
+        config["system_status"] = "RECOVERY_NEEDED"
+        config["recovery_status"] = "HAS_REPLACEMENT"
+        config["new_graph"] = new_ip_graph
+        config["new_session"] = new_session
+        print("系统已标记为需要恢复，将通过通信循环通知客户端")
+        
+        # 5.添加替代设备到工作设备池
+        for old_ip, replacement_device in replacement_mapping.items():
+            device_pool_manager.working_devices.append(replacement_device)
+            print(f"替代设备 {replacement_device.get('ip')} 添加到工作设备池")
+        
+        # 清空故障设备池，防止重复触发故障处理
+        print("清空故障设备池...")
+        device_pool_manager.failed_working_devices.clear()
+        device_pool_manager.failed_active_devices.clear()
+        
+        # 重置已处理的设备标志
+        if 'already_processed_failures' in globals():
+            already_processed_failures.clear()
+            print("重置故障设备处理标记")
+            
+        print("系统故障处理准备完成，等待发送故障恢复信号")
+        
+       
+        
+    except Exception as e:
+        print(f"系统故障处理出错: {e}")
+        traceback.print_exc()
 
 def main():
     """主函数，包含设备注册、模型分割和发送功能"""
     global devices        # 引用全局变量
     global ip_graph_requested
     global ip_graph  # 添加全局声明
+    global active_socket  # 添加全局声明
     
     try:
         start = time.time()
@@ -519,9 +1070,18 @@ def main():
         registration_socket = context.socket(zmq.ROUTER)
         registration_socket.bind(f"tcp://*:{PORT}")
         
+        # 创建活跃设备通信套接字
+        active_socket = context.socket(zmq.ROUTER)
+        active_socket.bind(f"tcp://*:{active_device_port}")
+        print(f"活跃设备通信套接字已绑定到端口: {active_device_port}")
+        
         # 设置注册套接字的超时，只用于注册和心跳
         registration_socket.setsockopt(zmq.RCVTIMEO, 1000)  # 1秒接收超时
         registration_socket.setsockopt(zmq.SNDTIMEO, 1000)  # 1秒发送超时
+        
+        # 设置活跃设备套接字的超时
+        active_socket.setsockopt(zmq.RCVTIMEO, 1000)  # 1秒接收超时
+        active_socket.setsockopt(zmq.SNDTIMEO, 1000)  # 1秒发送超时
         
         # 设置默认模型，防止未定义错误
         requested_model = "bloom560m-int8"  # 默认模型
@@ -565,7 +1125,7 @@ def main():
             
             # 获取当前设备数量并检查变化 - 最短持有锁的时间
             with devices_pool_lock:
-                current_device_count = len(device_pool_manager.device_pool)
+                current_device_count = len(device_pool_manager.working_devices)
                 initialization_complete = device_pool_manager.initialization_complete
             
             # 如果设备数量发生变化，更新最后注册时间
@@ -642,6 +1202,7 @@ def main():
                     session_index_json = file.read()
                 
                 ip_module = json.loads(ip_module_json)
+                global session 
                 session = json.loads(session_index_json)
                 file_cfg = retrieve_file_cfg(ip_module)
                 
@@ -822,7 +1383,7 @@ def main():
         
         print(f'\n图: {ip_graph}')
         print(f"会话索引: {session}")
-        
+        global config
         # 创建配置
         config = {
             "file_path": file_cfg,
@@ -864,6 +1425,7 @@ def main():
         # 创建新的通信套接字，使用monitor_port而不是原来的端口
         try:
             print(f"尝试使用monitor_port: {monitor_port}作为通信端口")
+            global communication_socket
             communication_socket = context.socket(zmq.ROUTER)
             communication_socket.bind(f"tcp://*:{monitor_port}")
             print(f"通信套接字已绑定到monitor_port: {monitor_port}")
@@ -913,6 +1475,7 @@ def main():
         try:
             registration_socket.close()
             communication_socket.close()
+            active_socket.close()  # 关闭活跃设备通信套接字
             context.term()
         except Exception as e:
             print(f"关闭资源时出错: {e}")
