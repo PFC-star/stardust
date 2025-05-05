@@ -277,14 +277,18 @@ def communication_open_close(sender, config, status, conditions, lock, open=True
             status[client_id] = b'Recovery'
             print(f"Status: Recovery {config['ids'][client_id]}")
             sender.send_multipart([client_id,
-                                    config["graph"],
-                                    config["session_index"],
-                                  
-                                   ])
+                                      config["graph"],
+                                      config["session_index"],
+                                       json.dumps(config["dependency"]).encode(),
+                                    ])
         elif msg == b'RecoveryInference':
             status[client_id] = b'RecoveryInference'
             print(f"Status: RecoveryInference {config['ids'][client_id]}")
-             
+        elif msg == b'RecoveryReady':
+            status[client_id] = b'RecoveryReady'
+            print(f"Status: RecoveryReady {config['ids'][client_id]}")
+            # 判断active设备是否也RecoveryReady了
+            
  
                      
             

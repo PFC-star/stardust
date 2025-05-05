@@ -144,6 +144,7 @@ def communication_open_close_active(sender, config, device_id, status, lock, ope
                 sender.send_multipart([client_id,
                                       config["graph"],
                                       config["session_index"],
+                                       json.dumps(config["dependency"]).encode(),
                                     ])
             
             elif msg == b'RecoveryInference':
@@ -175,7 +176,7 @@ class DevicePoolManager:
         # 使用原子操作来管理设备状态
         self.device_status = {}  # {device_id: {status, last_heartbeat, info}}
         self.device_heartbeats = {}           # 记录设备最后心跳时间
-        self.heartbeat_timeout = 60           # 心跳超时时间(秒)
+        self.heartbeat_timeout = 20           # 心跳超时时间(秒)
         self.heartbeat_check_interval = 10    # 心跳检查间隔(秒)
         self.initialization_complete = False  # 标记是否完成初始化阶段
         self.active_device_threads = {}       # 存储活跃设备通信线程
