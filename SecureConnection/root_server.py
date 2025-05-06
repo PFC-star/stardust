@@ -3,6 +3,7 @@ import json
 import time
 from threading import Thread
 import zmq
+import global_config
 
 """
     R: Ready
@@ -97,172 +98,15 @@ def communication_open_close(sender, config, status, conditions, lock, open=True
                 print(f"Status: Start {config['ids'][client_id]}")
         
         ## 添加故障恢复处理 - 检查是否存在需要恢复的状态
-        elif msg == b'Running' or msg == b'HEARTBEAT':
-            # 检查系统是否需要恢复
-            if "system_status" in config and config["system_status"] == "RECOVERY_NEEDED":
-                client_ip = config["ids"][client_id].decode() if isinstance(config["ids"][client_id], bytes) else config["ids"][client_id]
-                print(f"检测到系统需要恢复，向设备 {client_ip} 发送握手请求")
-                
-                # 发送握手请求
-                try:
-                    sender.send_multipart([client_id, b"HANDSHAKE_REQUEST"])
-                    print(f"已向设备 {client_ip} 发送握手请求，等待响应")
-                    
-                    # 等待握手响应 - 设置超时
-                    original_timeout = sender.getsockopt(zmq.RCVTIMEO)
-                    sender.setsockopt(zmq.RCVTIMEO, 10000)  # 10秒超时
-                    
-                    try:
-                        response = sender.recv_multipart()
-                        if len(response) >= 2 and response[0] == client_id:
-                            response_msg = response[1].decode('utf-8', errors='ignore')
-                            print(f"收到设备 {client_ip} 握手响应: {response_msg}")
-                            
-                            if response_msg == "HANDSHAKE_READY":
-                                print(f"设备 {client_ip} 握手成功，开始发送故障恢复信号")
-                                
-                                # 根据故障恢复状态发送不同消息
-                                if config["recovery_status"] == "HAS_REPLACEMENT":
-                                    # 有替代设备，发送完整的故障恢复信息
-                                    print(f"向设备 {client_ip} 发送故障恢复信号 (有替代设备)")
-                                    
-                                    # 1. 发送故障恢复信号
-                                    sender.send_multipart([client_id, b"FAILURE_RECOVERY"])
-                                    print(f"故障恢复信号发送完成")
-                                    
-                                    # 等待客户端处理
-                                    import time
-                                    time.sleep(3)
-                                    
-                                    # 2. 发送新IP图
-                                    sender.send_multipart([client_id, config["graph"]])
-                                    print(f"新IP图发送完成")
-                                    
-                                    # 等待客户端处理
-                                    time.sleep(3)
-                                    
-                                    # 3. 发送会话索引
-                                    sender.send_multipart([client_id, config["session_index"]])
-                                    print(f"会话索引发送完成")
-                                    
-                                    # 设置设备状态为恢复中
-                                    status[client_id] = b'Recovering'
-                                    print(f"设备 {client_ip} 进入恢复状态")
-                                    
-                                elif config["recovery_status"] == "NO_REPLACEMENT":
-                                    # 无替代设备，发送系统故障通知
-                                    print(f"向设备 {client_ip} 发送系统故障通知 (无替代设备)")
-                                    sender.send_multipart([client_id, b"SYSTEM_FAILURE_NO_REPLACEMENT", 
-                                                         json.dumps(config.get("failed_ips", [])).encode('utf-8')])
-                                    
-                                    # 设置设备状态为暂停
-                                    status[client_id] = b'Suspended'
-                                    print(f"设备 {client_ip} 进入暂停状态")
-                            else:
-                                print(f"设备 {client_ip} 握手响应不符合预期: {response_msg}")
-                        else:
-                            print(f"接收到格式异常的握手响应")
-                            
-                    except zmq.error.Again:
-                        print(f"等待设备 {client_ip} 握手响应超时")
-                    except Exception as e:
-                        print(f"处理设备 {client_ip} 握手响应时出错: {e}")
-                        import traceback
-                        traceback.print_exc()
-                    finally:
-                        # 恢复原来的超时设置
-                        sender.setsockopt(zmq.RCVTIMEO, original_timeout)
-                    
-                except Exception as e:
-                    print(f"向设备 {client_ip} 发送握手请求时出错: {e}")
-                    import traceback
-                    traceback.print_exc()
-            
+        elif msg == b'Running' :
+           
             # 保持正常的Running状态处理
             status[client_id] = b'Running'
             # 如果客户端没有明确告知running状态，这里可以发送一个正常响应
-            if msg == b'HEARTBEAT':
-                sender.send_multipart([client_id, b"HEARTBEAT_RECEIVED", b"SYSTEM_NORMAL"])
-                print(f"设备心跳响应：系统正常")
+          
 
-        ## 添加故障恢复处理逻辑
-        elif msg == b"FAILURE_RECOVERY_ACK":
-            print(f"设备 {config['ids'][client_id]} 确认收到故障恢复信号")
-            status[client_id] = b'Recovery'
-            
-            # 记录已恢复的设备数量
-            recovery_count = sum(1 for s in status.values() if s == b'Recovery')
-            expected_count = len(config["ids"]) - sum(1 for ip in config["ids"].values() 
-                                                     if ip.decode() in config.get("failed_ips", []))
-            
-            print(f"故障恢复进度: {recovery_count}/{expected_count} 设备已恢复")
-            
-            # 当所有预期的设备都已恢复时，通知继续运行
-            if recovery_count >= expected_count:
-                print("所有设备已恢复，继续推理")
-                for cid in config["ids"]:
-                    if status.get(cid) == b'Recovery':
-                        sender.send_multipart([cid, b"RESUME_INFERENCE"])
-                        status[cid] = b'Running'
-                        
-                # 清除故障标记
-                if "system_status" in config:
-                    del config["system_status"]
-                if "recovery_status" in config:
-                    del config["recovery_status"]
-                if "failed_ips" in config:
-                    del config["failed_ips"]
-                
-                print("系统已成功从故障中恢复")
-        
-        ## 处理无替代设备情况下的故障确认
-        elif msg == b"SYSTEM_FAILURE_NO_REPLACEMENT_ACK":
-            print(f"设备 {config['ids'][client_id]} 确认收到系统故障通知(无替代设备)")
-            status[client_id] = b'Suspended'
-            
-            # 记录已暂停的设备数量
-            suspended_count = sum(1 for s in status.values() if s == b'Suspended')
-            expected_count = len(config["ids"]) - sum(1 for ip in config["ids"].values()
-                                                     if ip.decode() in config.get("failed_ips", []))
-            
-            print(f"系统暂停进度: {suspended_count}/{expected_count} 设备已暂停")
-            
-            # 当所有预期的设备都已暂停时，等待人工干预
-            if suspended_count >= expected_count:
-                print("所有设备已暂停，等待人工干预")
-                
-                # 这里可以添加人工干预的通知机制，如发送邮件或短信
-                print("需要人工干预：系统因设备故障且无可用替代设备而暂停")
-                print(f"故障设备列表: {config.get('failed_ips', [])}")
-                
-                # 保持系统在suspended状态
-                for cid in config["ids"]:
-                    if status.get(cid) == b'Suspended':
-                        # 可以添加定期发送保持暂停状态的消息
-                        pass
-
-        elif msg == b"Running":
-            # Todo simulate load balance
-            # time.sleep(10)
-            # print(f"{config['ids'][client_id]} Start Load Balance")
-            # # config["session_index"] = ";".join(["0,1", "2,3,4,5,6", "7,8,9"]).encode('utf-8')
-            # sender.send_multipart([client_id, b"re-balance",
-            #                                   config["session_index"],
-            #                                   json.dumps(config["dependency"]).encode()])
-            
-            # if (config["ids"][client_id] == config["head_node"].encode()):
-            #     client_id, msg = sender.recv_multipart()
-            #     config["reload_sampleId"] = msg.decode()
-            #     print(f"The Reload Sample starts from {config['reload_sampleId']}")
-            #     assert config["reload_sampleId"].isdigit(), f"reload sampleId is not an integer string"
-            # else:
-            #     while (config["reload_sampleId"] == None):
-            #         print("Wait the resample ID")
-            #         time.sleep(0.1)
-            
-            #     print(f"Send Reload Sample id : {config['reload_sampleId']} to {config['ids'][client_id]}")
-            #     sender.send_multipart([client_id, "id".encode(), config["reload_sampleId"].encode()])
-            pass
+     
+       
         elif msg == b'Finish':
             status[client_id] = b'Close'
             with conditions[2]:
@@ -281,14 +125,18 @@ def communication_open_close(sender, config, status, conditions, lock, open=True
                                       config["session_index"],
                                        json.dumps(config["dependency"]).encode(),
                                     ])
-        elif msg == b'RecoveryInference':
-            status[client_id] = b'RecoveryInference'
-            print(f"Status: RecoveryInference {config['ids'][client_id]}")
-        elif msg == b'RecoveryReady':
-            status[client_id] = b'RecoveryReady'
-            print(f"Status: RecoveryReady {config['ids'][client_id]}")
-            # 判断active设备是否也RecoveryReady了
+        elif msg == b'WaitingStart':
+            status[client_id] = b'WaitingStart'
+            status["status"] = b'WaitingStart'
             
+            print(f"Status: WaitingStart {config['ids'][client_id]}")
+            while True:
+                time.sleep(1)
+                if "status" in global_config.active_device_status.keys()  and global_config.active_device_status["status"] == b'WaitingStart':
+                # 发送开始推理信号
+                    sender.send_multipart([client_id, b'ResumeStart'])
+                    status[client_id] = b'ResumeStart'
+                    break
  
                      
             
@@ -342,7 +190,8 @@ def communication_result_transmission(sender, result, num_devices, tail_client_i
     pass
 
 
-all_status = {b"Ready":  0,
+all_status = {b"Init":  -1,
+              b"Ready":  0,
               b"Open":   1,
               b"Prepare":2,
               b"Initialized": 3,

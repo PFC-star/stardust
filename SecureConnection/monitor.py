@@ -10,10 +10,27 @@ import sys
 import threading
 import copy
 from collections import deque
-from .root_server import send_model_file
+ 
 import traceback
 
 TIMEOUT = 1000
+         
+
+def send_model_file(path, sock, client_id, chunked=True, chunk_size=10*1024*1024):
+    if not chunked:
+        with open(path, 'rb') as f:
+            data = f.read()
+            sock.send_multipart([client_id, data])
+            print("Data is sent")
+    else:
+        with open(path, 'rb') as file:
+            while True:
+                chunk = file.read(chunk_size)
+                if not chunk:
+                    sock.send_multipart([client_id, b''])
+                    break
+                sock.send_multipart([client_id, chunk])
+            print("Data is sent")
 
 class Monitor:
     monitor_info_map = {}

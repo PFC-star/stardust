@@ -37,6 +37,7 @@ active_tasks = {}  # 格式: {task_id: {"devices": devices_list, "status": statu
 devices_pool_lock = threading.Lock()  # 设备池的线程锁
 device_identifiers_map = {}  # 存储设备ID与其ZMQ标识符的映射: {device_id: identifier}
 device_identifiers_lock = threading.Lock()  # 标识符映射的线程锁
+import global_config
 
 # 定义活跃设备的通信函数
 def communication_open_close_active(sender, config, device_id, status, lock, open=True):
@@ -125,12 +126,12 @@ def communication_open_close_active(sender, config, device_id, status, lock, ope
                 status[client_id] = b'Initialized'
                 print(f"Status: Initialized {config['ids'][client_id]}")
                 
-                ## Start
-                sender.send_multipart([client_id, b"WaitingStart"])
-                status[client_id] = b'WaitingStart'
+                ## WaitingRecovery
+                sender.send_multipart([client_id, b"WaitingRecovery"])
+                status[client_id] = b'WaitingRecovery'
                 
-                print(f"Status: WaitingStart {config['ids'][client_id]}")
-            
+                print(f"Status: WaitingRecovery {config['ids'][client_id]}")
+              
             elif msg == b'Finish':
                 status[client_id] = b'Close'
                 
@@ -147,10 +148,19 @@ def communication_open_close_active(sender, config, device_id, status, lock, ope
                                        json.dumps(config["dependency"]).encode(),
                                     ])
             
-            elif msg == b'RecoveryInference':
-                status[client_id] = b'RecoveryInference'
-                print(f"Status: RecoveryInference {config['ids'][client_id]}")
-    
+            elif msg == b'WaitingStart':
+                status[client_id] = b'WaitingStart'
+                status["status"] = b'WaitingStart'
+                print(f"Status: WaitingStart {config['ids'][client_id]}")
+                while True:
+                    time.sleep(1)
+                    if "status" in global_config.working_device_status.keys() and global_config.working_device_status["status"] == b'WaitingStart':
+                       
+                    # 发送开始推理信号
+                        sender.send_multipart([client_id, b'Start'])
+                        status[client_id] = b'Start'
+                        print(f"活跃设备Status: Start {config['ids'][client_id]}")
+                        break
     except Exception as e:
         print(f"活跃设备 {device_id} 通信线程出错: {e}")
         traceback.print_exc()
@@ -176,7 +186,7 @@ class DevicePoolManager:
         # 使用原子操作来管理设备状态
         self.device_status = {}  # {device_id: {status, last_heartbeat, info}}
         self.device_heartbeats = {}           # 记录设备最后心跳时间
-        self.heartbeat_timeout = 20           # 心跳超时时间(秒)
+        self.heartbeat_timeout = 20          # 心跳超时时间(秒)
         self.heartbeat_check_interval = 10    # 心跳检查间隔(秒)
         self.initialization_complete = False  # 标记是否完成初始化阶段
         self.active_device_threads = {}       # 存储活跃设备通信线程
@@ -298,8 +308,8 @@ class DevicePoolManager:
                 return
             
             # 创建状态字典
-            if not hasattr(self, 'active_device_status'):
-                self.active_device_status = {}
+           
+                
             
             # 状态将在通信过程中由消息交换决定，不预先设置
             
@@ -393,7 +403,7 @@ class DevicePoolManager:
             global active_socket
             thread = threading.Thread(
                 target=communication_open_close_active,
-                args=(active_socket, device_config, device_id, self.active_device_status, [threading.Lock(), threading.Lock()]),
+                args=(active_socket, device_config, device_id, global_config.active_device_status, [threading.Lock(), threading.Lock()]),
                 daemon=True
             )
             thread.name = f"ActiveDevice-{device_id}"
@@ -1414,7 +1424,7 @@ def main():
         print("配置完成，准备发送模型...")
         
         # 启动通信线程
-        status = {}
+       
         threads = []
         lock = threading.Lock()
         locks = [threading.Lock(), threading.Lock()]
@@ -1439,7 +1449,7 @@ def main():
         for i in range(config["num_device"]):
             t = threading.Thread(
                 target=root_server.communication_open_close, 
-                args=(communication_socket, config, status, conditions, locks)
+                args=(communication_socket, config, global_config.working_device_status, conditions, locks)
             )
             threads.append(t)
         
