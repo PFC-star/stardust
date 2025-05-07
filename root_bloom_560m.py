@@ -38,7 +38,8 @@ devices_pool_lock = threading.Lock()  # 设备池的线程锁
 device_identifiers_map = {}  # 存储设备ID与其ZMQ标识符的映射: {device_id: identifier}
 device_identifiers_lock = threading.Lock()  # 标识符映射的线程锁
 import global_config
-
+global Quntization_Option
+ 
 # 定义活跃设备的通信函数
 def communication_open_close_active(sender, config, device_id, status, lock, open=True):
     """
@@ -117,7 +118,7 @@ def communication_open_close_active(sender, config, device_id, status, lock, ope
                 ## Prepare
                 sender.send_multipart([client_id, b'Prepare'])
                 status[client_id] = b"Prepare"
-                # communication_prepare(sender, config, client_id, status)
+                communication_prepare(sender, config, client_id, status)
                 
                 print(f"Status: Prepare {config['ids'][client_id]}")
             
@@ -145,7 +146,7 @@ def communication_open_close_active(sender, config, device_id, status, lock, ope
                 sender.send_multipart([client_id,
                                       config["graph"],
                                       config["session_index"],
-                                       json.dumps(config["dependency"]).encode(),
+                                      json.dumps(config["dependency"]).encode(),
                                     ])
             
             elif msg == b'WaitingStart':
@@ -186,8 +187,8 @@ class DevicePoolManager:
         # 使用原子操作来管理设备状态
         self.device_status = {}  # {device_id: {status, last_heartbeat, info}}
         self.device_heartbeats = {}           # 记录设备最后心跳时间
-        self.heartbeat_timeout = 20          # 心跳超时时间(秒)
-        self.heartbeat_check_interval = 10    # 心跳检查间隔(秒)
+        self.heartbeat_timeout = 3          # 心跳超时时间(秒)
+        self.heartbeat_check_interval = 1   # 心跳检查间隔(秒)
         self.initialization_complete = False  # 标记是否完成初始化阶段
         self.active_device_threads = {}       # 存储活跃设备通信线程
 
@@ -336,24 +337,24 @@ class DevicePoolManager:
             active_device_ip = active_device_info.get("ip", "")
             
             # 获取全局配置
-            global config, root_dir
+            global config, root_dir, Quntization_Option, requested_model
             
             # 确定模型名称和量化选项
-            model_name = "bloom560m"
-            quantization_option = True  # 默认使用量化模型 (int8)
+           
+            
             
             # 创建修改后的ip_module，将第二个IP替换为活跃设备的IP
             modified_ip_module = [
-                [head_device.get("ip", ""), f"/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_quantized_int8_res/device0/module0/module.zip"],
-                [active_device_ip, f"/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_quantized_int8_res/device1/module1/module.zip"]
+                [head_device.get("ip", ""), f"/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_unquantized_res/device0/module0/module.zip"],
+                [active_device_ip, f"/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_unquantized_res/device1/module1/module.zip"]
             ]
             
             print(f"为活跃设备 {device_id} 创建修改后的ip_module:")
             print(modified_ip_module)
             
             # 获取送信目录
-            to_send_path = retrieve_sending_dir(root_dir, model_name, 
-                                           quantization_option=quantization_option,
+            to_send_path = retrieve_sending_dir(root_dir, requested_model, 
+                                           quantization_option=Quntization_Option,
                                            residual_connection=residual_connection_option)
             
             # 使用retrieve_file_cfg获取文件配置
@@ -361,9 +362,9 @@ class DevicePoolManager:
             
             # 使用retrieve_sending_info获取图和依赖信息
             ip_graph, dependencyMap = retrieve_sending_info(
-                root_dir, model_name, 
+                root_dir, requested_model, 
                 ip_module_list=modified_ip_module,
-                quantization_option=quantization_option,
+                quantization_option=Quntization_Option,
                 residual_connection=residual_connection_option
             )
             
@@ -387,7 +388,11 @@ class DevicePoolManager:
                 "skip_model_transmission": True,
                 "dependency": dependencyMap
             }
-            
+            for idx, fPath in dependencyMap.items():
+                file = open(fPath, "r")
+                data = json.load(file)
+                device_config["dependency"][idx] = data
+            print(f"device_config: {device_config}")
             # # 添加设备ID映射
             # device_config["ids"][head_device.get("device_id", "")] = head_device.get("ip", "").encode('utf-8')
             # device_config["ids"][device_id] = active_device_ip.encode('utf-8')
@@ -1034,14 +1039,14 @@ def handle_system_failure():
         print("配置已更新:")
         print(f"新IP图: {new_ip_graph}")
         print(f"新会话索引: {new_session}")
-        
+        print(f"新配置: {config}")
         # 4.准备通过现有通信循环发送故障控制信息
         config["system_status"] = "RECOVERY_NEEDED"
         config["recovery_status"] = "HAS_REPLACEMENT"
         config["new_graph"] = new_ip_graph
         config["new_session"] = new_session
         print("系统已标记为需要恢复，将通过通信循环通知客户端")
-        
+        print(f"config(故障恢复后): {config}")
         # 5.添加替代设备到工作设备池
         for old_ip, replacement_device in replacement_mapping.items():
             device_pool_manager.working_devices.append(replacement_device)
@@ -1095,7 +1100,8 @@ def main():
         active_socket.setsockopt(zmq.SNDTIMEO, 1000)  # 1秒发送超时
         
         # 设置默认模型，防止未定义错误
-        requested_model = "bloom560m-int8"  # 默认模型
+        global requested_model
+        requested_model = "bloom560m"  # 默认模型
         
         # 定义常量
         running = True  # 控制主线程运行的标志
@@ -1183,18 +1189,23 @@ def main():
         
         print(f"初始化阶段结束，工作设备数: {len(device_pool_manager.working_devices)}")
         print(f"准备分割模型和发送模型...")
-        
+      
         # ============== 模型分割和发送部分 ==============
         if requested_model:
         # 确定模型和量化选项
             if requested_model == "bloom560m":
+                global Quntization_Option
                 Quntization_Option = False
             elif requested_model == "bloom560m-int8":
+               
                 Quntization_Option = True
+               
                 requested_model = "bloom560m"  # 内部使用非量化名称
             else:
-                print(f"使用默认模型: bloom560m-int8")
-                Quntization_Option = True
+                print(f"使用默认模型: bloom560m")
+               
+                Quntization_Option = False
+             
                 requested_model = "bloom560m"
             
             # 检索模型发送目录
@@ -1361,8 +1372,9 @@ def main():
         for index, device in enumerate(device_pool_manager.working_devices):
             ip = device.get("ip")
             role = device.get("role")
-            
+         
             if not Quntization_Option:
+                print(f"使用非量化模型: bloom560m")
                 pathList = [str(ip), f"/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_unquantized_res/device{index}/module{index}/module.zip"]
             else:
                 pathList = [str(ip), f"/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_quantized_int8_res/device{index}/module{index}/module.zip"]
@@ -1414,15 +1426,16 @@ def main():
             "onnx": True,
             "ids": {}
         }
-        
+     
         # 读取依赖关系JSON文件
         for idx, fPath in dependencyMap.items():
             file = open(fPath, "r")
             data = json.load(file)
             config["dependency"][idx] = data
         
+   
+        print(f"config(正常情况下): {config}")
         print("配置完成，准备发送模型...")
-        
         # 启动通信线程
        
         threads = []
