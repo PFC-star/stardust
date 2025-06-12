@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>设备状态监控</title>
+    <meta charset="utf-8">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #eee;
+        }
+        .system-status {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .status-item {
+            background: #fff;
+            padding: 15px;
+            border-radius: 6px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        .status-item h3 {
+            margin: 0;
+            color: #666;
+            font-size: 0.9em;
+        }
+        .status-item .value {
+            font-size: 1.8em;
+            font-weight: bold;
+            margin: 5px 0;
+        }
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .status-card {
+            background-color: #fff;
+            padding: 15px;
+            border-radius: 6px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .status-card h2 {
+            margin-top: 0;
+            color: #333;
+            font-size: 1.2em;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .device-list {
+            list-style: none;
+            padding: 0;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .device-item {
+            padding: 12px;
+            margin: 4px 0;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+            border-left: 4px solid #007bff;
+        }
+        .device-item.failed {
+            border-left-color: #dc3545;
+        }
+        .device-item.working {
+            border-left-color: #28a745;
+        }
+        .device-item.active {
+            border-left-color: #17a2b8;
+        }
+        .count {
+            font-size: 2em;
+            font-weight: bold;
+            color: #007bff;
+            margin: 10px 0;
+        }
+        .timestamp {
+            color: #666;
+            font-size: 0.9em;
+            text-align: right;
+            margin-top: 20px;
+        }
+        .failed {
+            color: #dc3545;
+        }
+        .working {
+            color: #28a745;
+        }
+        .active {
+            color: #17a2b8;
+        }
+        .chart-container {
+            margin-top: 20px;
+            padding: 15px;
+            background: #fff;
+            border-radius: 6px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            height: 300px;
+            width: 50%;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        .device-details {
+            font-size: 0.9em;
+            color: #666;
+            margin-top: 5px;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            margin-left: 8px;
+        }
+        .history-list {
+            list-style: none;
+            padding: 0;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .history-item {
+            padding: 8px;
+            margin: 4px 0;
+            background: #f8f9fa;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>设备状态监控</h1>
+            <div class="timestamp" id="last-update">最后更新: {{ status.last_update }}</div>
+        </div>
+
+        <div class="system-status">
+            <div class="status-item">
+                <h3>系统运行时间</h3>
+                <div class="value" id="uptime">{{ status.uptime }}</div>
+            </div>
+            <div class="status-item">
+                <h3>总设备数</h3>
+                <div class="value" id="total-devices">{{ status.total_devices }}</div>
+            </div>
+            <div class="status-item">
+                <h3>在线设备数</h3>
+                <div class="value working" id="online-devices">{{ status.online_devices }}</div>
+            </div>
+            <div class="status-item">
+                <h3>故障设备数</h3>
+                <div class="value failed" id="failed-devices">{{ status.failed_devices }}</div>
+            </div>
+        </div>
+        
+        <div class="status-grid">
+            <div class="status-card">
+                <h2>
+                    工作设备
+                    <span class="count working" id="working-devices-count">{{ status.working_devices|length }}</span>
+                </h2>
+                <ul class="device-list" id="working-devices-list">
+                    {% for device in status.working_devices %}
+                    <li class="device-item working">
+                        <div>IP: {{ device.ip }}</div>
+                        <div>ID: {{ device.id }}</div>
+                        <div class="device-details">
+                            角色: {{ device.role }}<br>
+                            最后心跳: {{ device.last_heartbeat }}
+                        </div>
+                    </li>
+                    {% endfor %}
+                </ul>
+            </div>
+
+            <div class="status-card">
+                <h2>
+                    活跃设备
+                    <span class="count active" id="active-devices-count">{{ status.active_devices|length }}</span>
+                </h2>
+                <ul class="device-list" id="active-devices-list">
+                    {% for device in status.active_devices %}
+                    <li class="device-item active">
+                        <div>IP: {{ device.ip }}</div>
+                        <div>ID: {{ device.id }}</div>
+                        <div class="device-details">
+                            角色: {{ device.role }}<br>
+                            最后心跳: {{ device.last_heartbeat }}
+                        </div>
+                    </li>
+                    {% endfor %}
+                </ul>
+            </div>
+
+            <div class="status-card">
+                <h2>
+                    工作设备故障
+                    <span class="count failed" id="failed-working-devices-count">{{ status.failed_working_devices|length }}</span>
+                </h2>
+                <ul class="device-list" id="failed-working-devices-list">
+                    {% for device in status.failed_working_devices %}
+                    <li class="device-item failed">
+                        <div>IP: {{ device.ip }}</div>
+                        <div>ID: {{ device.id }}</div>
+                        <div class="device-details">
+                            角色: {{ device.role }}<br>
+                            故障时间: {{ device.failure_time }}<br>
+                            故障原因: {{ device.failure_reason }}
+                        </div>
+                    </li>
+                    {% endfor %}
+                </ul>
+            </div>
+
+            <div class="status-card">
+                <h2>
+                    活跃设备故障
+                    <span class="count failed" id="failed-active-devices-count">{{ status.failed_active_devices|length }}</span>
+                </h2>
+                <ul class="device-list" id="failed-active-devices-list">
+                    {% for device in status.failed_active_devices %}
+                    <li class="device-item failed">
+                        <div>IP: {{ device.ip }}</div>
+                        <div>ID: {{ device.id }}</div>
+                        <div class="device-details">
+                            角色: {{ device.role }}<br>
+                            故障时间: {{ device.failure_time }}<br>
+                            故障原因: {{ device.failure_reason }}
+                        </div>
+                    </li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+
+        <div class="chart-container">
+            <canvas id="deviceStatusChart"></canvas>
+        </div>
+
+        <div class="status-card">
+            <h2>最近状态变化</h2>
+            <ul class="history-list" id="history-list">
+                {% for event in status.history %}
+                <li class="history-item">
+                    {{ event.time }} - {{ event.message }}
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        // 全局变量保存图表对象
+        let deviceChart;
+        
+        // 初始化图表
+        function initChart(data) {
+            const ctx = document.getElementById('deviceStatusChart').getContext('2d');
+            deviceChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['工作设备', '活跃设备', '工作设备故障', '活跃设备故障'],
+                    datasets: [{
+                        data: [
+                            data.working_devices.length,
+                            data.active_devices.length,
+                            data.failed_working_devices.length,
+                            data.failed_active_devices.length
+                        ],
+                        backgroundColor: [
+                            '#28a745',
+                            '#17a2b8',
+                            '#dc3545',
+                            '#dc3545'
+                        ]
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'bottom'
+                        },
+                        title: {
+                            display: true,
+                            text: '设备状态分布'
+                        }
+                    }
+                }
+            });
+        }
+        
+        // 更新图表
+        function updateChart(data) {
+            if (deviceChart) {
+                deviceChart.data.datasets[0].data = [
+                    data.working_devices.length,
+                    data.active_devices.length,
+                    data.failed_working_devices.length,
+                    data.failed_active_devices.length
+                ];
+                deviceChart.update();
+            }
+        }
+        
+        // 更新设备列表
+        function updateDeviceList(elementId, devices, isFailedList = false) {
+            const list = document.getElementById(elementId);
+            list.innerHTML = '';
+            
+            devices.forEach(device => {
+                const li = document.createElement('li');
+                li.className = isFailedList ? 'device-item failed' : 
+                               (elementId.includes('active') ? 'device-item active' : 'device-item working');
+                
+                const ipDiv = document.createElement('div');
+                ipDiv.textContent = `IP: ${device.ip}`;
+                
+                const idDiv = document.createElement('div');
+                idDiv.textContent = `ID: ${device.id}`;
+                
+                const detailsDiv = document.createElement('div');
+                detailsDiv.className = 'device-details';
+                
+                if (isFailedList) {
+                    detailsDiv.innerHTML = `角色: ${device.role}<br>故障时间: ${device.failure_time}<br>故障原因: ${device.failure_reason}`;
+                } else {
+                    detailsDiv.innerHTML = `角色: ${device.role}<br>最后心跳: ${device.last_heartbeat}`;
+                }
+                
+                li.appendChild(ipDiv);
+                li.appendChild(idDiv);
+                li.appendChild(detailsDiv);
+                list.appendChild(li);
+            });
+        }
+        
+        // 更新历史记录
+        function updateHistory(events) {
+            const list = document.getElementById('history-list');
+            list.innerHTML = '';
+            
+            events.forEach(event => {
+                const li = document.createElement('li');
+                li.className = 'history-item';
+                li.textContent = `${event.time} - ${event.message}`;
+                list.appendChild(li);
+            });
+        }
+        
+        // 更新所有数据
+        function updateAll() {
+            $.ajax({
+                url: '/api/status',
+                type: 'GET',
+                dataType: 'json',
+                success: function(data) {
+                    // 更新基本信息
+                    $('#last-update').text(`最后更新: ${data.last_update}`);
+                    $('#uptime').text(data.uptime);
+                    $('#total-devices').text(data.total_devices);
+                    $('#online-devices').text(data.online_devices);
+                    $('#failed-devices').text(data.failed_devices);
+                    
+                    // 更新设备计数
+                    $('#working-devices-count').text(data.working_devices.length);
+                    $('#active-devices-count').text(data.active_devices.length);
+                    $('#failed-working-devices-count').text(data.failed_working_devices.length);
+                    $('#failed-active-devices-count').text(data.failed_active_devices.length);
+                    
+                    // 更新设备列表
+                    updateDeviceList('working-devices-list', data.working_devices);
+                    updateDeviceList('active-devices-list', data.active_devices);
+                    updateDeviceList('failed-working-devices-list', data.failed_working_devices, true);
+                    updateDeviceList('failed-active-devices-list', data.failed_active_devices, true);
+                    
+                    // 更新图表
+                    updateChart(data);
+                    
+                    // 更新历史记录
+                    updateHistory(data.history);
+                },
+                error: function(xhr, status, error) {
+                    console.error('获取数据失败:', error);
+                }
+            });
+        }
+        
+        // 初始化并定时更新
+        $(document).ready(function() {
+            // 初始化图表
+            initChart({{ status|tojson }});
+            
+            // 每500毫秒更新一次数据
+            setInterval(updateAll, 500);
+        });
+    </script>
+</body>
+</html> 
