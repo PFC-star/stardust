@@ -20,7 +20,7 @@ from pathlib import Path
 from onnxruntime_extensions.tools import add_pre_post_processing_to_model as add_ppp
 import sys
 import struct
-from mlprodict.onnx_tools.onnx_manipulations import select_model_inputs_outputs
+# from mlprodict.onnx_tools.onnx_manipulations import select_model_inputs_outputs
 from onnx import helper, checker
 from onnx import TensorProto
 import gc

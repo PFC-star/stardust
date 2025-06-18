@@ -3,6 +3,7 @@ import os
 # os.environ["DS_ACCELERATOR"]='cpu'
 import time
 import zmq
+import copy
 from SecureConnection import root_server
 from SecureConnection import server
 from SecureConnection import monitor
@@ -19,6 +20,7 @@ from system_pipeline.onnx_backend.optimization import Optimizer
 import socket
 import traceback
 import datetime
+from web_monitor import start_web_server
 monitor_receive_interval = 10  # set intervals for receiving monitor info from clients
 monitor_port = "34567"  # set server port to receive monitor info
 active_device_port = "23457"  # port for active device communication
@@ -75,7 +77,7 @@ def communication_open_close_active(sender, config, device_id, status, lock, ope
         while True:
             print('enter communication open close active')
             with lock[0]:
-                print('开始接收')
+                # print('开始接收')
                 try:
                     info = sender.recv_multipart()  # 使用阻塞方式，但有30秒超时
                 except zmq.error.Again:
@@ -87,7 +89,7 @@ def communication_open_close_active(sender, config, device_id, status, lock, ope
             client_id = info[0]
             msg = info[1]
             print(client_id + msg)
-            print("收到信号")
+            # print("收到信号")
             
             ## Ready
             if open and msg == b'Ready':
@@ -249,13 +251,13 @@ class DevicePoolManager:
                     break
             
             # 如果不在工作设备池中，检查活跃设备池
-            if not device_exists:
-                for device in self.active_devices:
-                    if device.get("device_id") == device_id:
-                        device.update(device_info)
-                        device_exists = True
-                        print(f"设备已在活跃设备池中，已更新: ID={device_id}, IP={ip}")
-                        break
+
+            for device in self.active_devices:
+                if device.get("device_id") == device_id:
+                    device.update(device_info)
+                    device_exists = True
+                    print(f"设备已在活跃设备池中，已更新: ID={device_id}, IP={ip}")
+                    break
             
             # 如果已存在，更新设备状态
             if device_exists:
@@ -267,22 +269,31 @@ class DevicePoolManager:
                 }
                 print(f"更新设备状态: ID={device_id}, 状态={status}")
                 return status
-            
+
+            # 初始化完成后，新设备直接添加到活跃设备池
+            self.active_devices.append(device_info) # 所有设备都首先添加到活跃设备池中
+            # status = "wait" # 状态为等待，至于是作为活跃设备还是工作设备稍后会定义
+            # status = "wait"
+            print(f"wait阶段 - 设备的状态待定: ID={device_id}, IP={ip}")
+
+            # 为新注册的活跃设备创建通信线程,进行初始化准备操作
+            self.start_active_device_thread(device_id) #
+
             # 设备不存在，需要添加
             if self.initialization_complete:
                 # 初始化完成后，新设备直接添加到活跃设备池
                 self.active_devices.append(device_info)
                 status = "active"
                 print(f"运行阶段 - 新设备已注册为活跃设备: ID={device_id}, IP={ip}")
-                
+
                 # 为新注册的活跃设备创建通信线程
                 self.start_active_device_thread(device_id)
             else:
                 # 初始化阶段，添加到工作设备池
-                self.working_devices.append(device_info)
+                self.active_devices.append(device_info)
                 status = "working"
                 print(f"初始化阶段 - 新设备已注册为工作设备: ID={device_id}, IP={ip}, 角色={device_info.get('role')}")
-            
+
             # 更新设备状态（原子操作）
             self.device_status[device_id] = {
                 "status": status,
@@ -382,8 +393,8 @@ class DevicePoolManager:
                 "session_index": ";".join(session).encode('utf-8'),
                 "task_type": b"generation",
                 "core_pool_size": b"1",
-                "num_sample": b"100",
-                "max_length": b"40",
+                "num_sample": b"1000",
+                "max_length": b"500",
                 "num_device": 2,  # 头节点和活跃设备共2个
                 "skip_model_transmission": True,
                 "dependency": dependencyMap
@@ -478,7 +489,7 @@ def heartbeat_check_thread():
     
     while True:
         try:
-            print(f"\n正在检查所有设备的心跳状态... 当前时间: {time.time():.2f}")
+            # print(f"\n正在检查所有设备的心跳状态... 当前时间: {time.time():.2f}")
             current_time = time.time()
             
             # 获取故障前的设备状态
@@ -526,7 +537,8 @@ def heartbeat_check_thread():
                     print(f"设备 {device_id} 已恢复正常 ({heartbeat_age:.1f}秒)，之前状态: {current_status}")
                     # 这里可以添加设备恢复的逻辑
                 else:
-                    print(f"设备 {device_id} 心跳正常 ({heartbeat_age:.1f}秒)，当前状态: {current_status}")
+                    pass
+                    # print(f"设备 {device_id} 心跳正常 ({heartbeat_age:.1f}秒)，当前状态: {current_status}")
             
             # 处理超时设备，使用原子操作
             failures_count = 0
@@ -588,10 +600,11 @@ def heartbeat_check_thread():
             else:
                 consecutive_empty_checks += 1
                 if consecutive_empty_checks <= 2:
-                    print("\n设备池状态正常 (无变化):")
+                    # print("\n设备池状态正常 (无变化):")
                     device_pool_manager.printInfo()
                 else:
-                    print(f"设备池状态正常 (已连续 {consecutive_empty_checks} 次无变化)")
+                    pass
+                    # print(f"设备池状态正常 (已连续 {consecutive_empty_checks} 次无变化)")
             
             # 每5次无变化检查后，重新打印状态
             if consecutive_empty_checks > 0 and consecutive_empty_checks % 5 == 0:
@@ -651,7 +664,7 @@ def handle_device_registration_and_heartbeat(socket, port):
                 else:
                     id_str = str(identifier)
                 
-                print(f"收到消息: 标识符={id_str}, 动作={action}")
+                # print(f"收到消息: 标识符={id_str}, 动作={action}")
                 
                 # 根据消息类型获取数据
                 if len(message) > 2:
@@ -1081,6 +1094,15 @@ def main():
         start = time.time()
         context = zmq.Context()
         
+        # 启动Web监控服务器
+        web_thread = threading.Thread(
+            target=start_web_server,
+            args=(device_pool_manager,),
+            daemon=True
+        )
+        web_thread.start()
+        print("Web监控服务器已启动，访问 http://localhost:34568 查看状态")
+        
         # 创建一个单一的注册/通信/心跳套接字
         PORT = 23456  # 设置统一的服务器端口
         registration_socket = context.socket(zmq.ROUTER)
@@ -1142,7 +1164,7 @@ def main():
             
             # 获取当前设备数量并检查变化 - 最短持有锁的时间
             with devices_pool_lock:
-                current_device_count = len(device_pool_manager.working_devices)
+                current_device_count = len(device_pool_manager.active_devices)
                 initialization_complete = device_pool_manager.initialization_complete
             
             # 如果设备数量发生变化，更新最后注册时间
@@ -1153,14 +1175,14 @@ def main():
             
             # 检查是否超过10秒没有新设备注册
             if time.time() - last_registration_time >= TIMEOUT and not initialization_complete:
-                if device_count > 0:  # 确保至少有一个设备
+                if device_count >= 2:  # 确保至少有两个个设备
                     # 初始化阶段结束，将当前设备设为工作设备
                     with devices_pool_lock:
                         if not device_pool_manager.initialization_complete:  # 再次检查以避免竞态条件
                             device_pool_manager.set_initialization_complete()
                             # 将设备添加到兼容旧代码的设备集合
                             devices.clear()  # 清空现有设备
-                            for device in device_pool_manager.working_devices:
+                            for device in device_pool_manager.active_devices:
                                 device_entry = {
                                     "ip": device.get("ip"),
                                     "role": device.get("role"),
@@ -1187,9 +1209,16 @@ def main():
             print("初始化失败：没有设备注册")
             return
         
-        print(f"初始化阶段结束，工作设备数: {len(device_pool_manager.working_devices)}")
+        print(f"初始化阶段结束，工作设备数: {len(device_pool_manager.active_devices)}")
         print(f"准备分割模型和发送模型...")
-      
+
+        # 现有的活跃设备转为工作设备
+        device_pool_manager.working_devices = deque(copy.deepcopy(device_pool_manager.active_devices) )
+        # 活跃设备清零
+        device_pool_manager.active_devices.clear()
+        print("工作设备：", device_pool_manager.working_devices)
+
+
         # ============== 模型分割和发送部分 ==============
         if requested_model:
         # 确定模型和量化选项
@@ -1412,7 +1441,7 @@ def main():
             "file_path": file_cfg,
             "num_sample": b'1000',
             "num_device": len(device_pool_manager.working_devices),
-            "max_length": b'40',
+            "max_length": b'100',
             "task_type": "generation".encode('utf-8'),
             "core_pool_size": b'1',
             "head_node": ip_graph[0],

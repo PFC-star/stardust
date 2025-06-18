@@ -37,13 +37,13 @@ def communication_open_close(sender, config, status, conditions, lock, open=True
     while True:
         print('enter communication open close')
         with lock[0]:
-            print('开始接收')
+            # print('开始接收')
             info = sender.recv_multipart()
 
         client_id = info[0]
         msg = info[1]
         print(client_id + msg)
-        print("收到信号")
+        # print("收到信号")
         ## Ready
         if open and msg == b'Ready':
             print("Status Ready")
