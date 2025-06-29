@@ -3,7 +3,6 @@ import os
 # os.environ["DS_ACCELERATOR"]='cpu'
 import time
 import zmq
-import copy
 from SecureConnection import root_server
 from SecureConnection import server
 from SecureConnection import monitor
@@ -251,13 +250,13 @@ class DevicePoolManager:
                     break
             
             # 如果不在工作设备池中，检查活跃设备池
-
-            for device in self.active_devices:
-                if device.get("device_id") == device_id:
-                    device.update(device_info)
-                    device_exists = True
-                    print(f"设备已在活跃设备池中，已更新: ID={device_id}, IP={ip}")
-                    break
+            if not device_exists:
+                for device in self.active_devices:
+                    if device.get("device_id") == device_id:
+                        device.update(device_info)
+                        device_exists = True
+                        print(f"设备已在活跃设备池中，已更新: ID={device_id}, IP={ip}")
+                        break
             
             # 如果已存在，更新设备状态
             if device_exists:
@@ -269,31 +268,22 @@ class DevicePoolManager:
                 }
                 print(f"更新设备状态: ID={device_id}, 状态={status}")
                 return status
-
-            # 初始化完成后，新设备直接添加到活跃设备池
-            self.active_devices.append(device_info) # 所有设备都首先添加到活跃设备池中
-            # status = "wait" # 状态为等待，至于是作为活跃设备还是工作设备稍后会定义
-            # status = "wait"
-            print(f"wait阶段 - 设备的状态待定: ID={device_id}, IP={ip}")
-
-            # 为新注册的活跃设备创建通信线程,进行初始化准备操作
-            self.start_active_device_thread(device_id) #
-
+            
             # 设备不存在，需要添加
             if self.initialization_complete:
                 # 初始化完成后，新设备直接添加到活跃设备池
                 self.active_devices.append(device_info)
                 status = "active"
                 print(f"运行阶段 - 新设备已注册为活跃设备: ID={device_id}, IP={ip}")
-
+                
                 # 为新注册的活跃设备创建通信线程
                 self.start_active_device_thread(device_id)
             else:
                 # 初始化阶段，添加到工作设备池
-                self.active_devices.append(device_info)
+                self.working_devices.append(device_info)
                 status = "working"
                 print(f"初始化阶段 - 新设备已注册为工作设备: ID={device_id}, IP={ip}, 角色={device_info.get('role')}")
-
+            
             # 更新设备状态（原子操作）
             self.device_status[device_id] = {
                 "status": status,
@@ -733,7 +723,8 @@ def handle_device_registration_and_heartbeat(socket, port):
                             print("发送 working")
                     except zmq.error.ZMQError as e:
                         print(f"发送注册响应时出错: {e}")
-                
+
+                # 正常工作心跳
                 elif action == "HEARTBEAT" or action == "HeartDetect":
                     # 处理心跳消息 - 使用唯一标识符的十六进制表示作为设备ID
                     device_id = identifier.hex() if isinstance(identifier, bytes) else str(identifier)
@@ -1164,7 +1155,7 @@ def main():
             
             # 获取当前设备数量并检查变化 - 最短持有锁的时间
             with devices_pool_lock:
-                current_device_count = len(device_pool_manager.active_devices)
+                current_device_count = len(device_pool_manager.working_devices)
                 initialization_complete = device_pool_manager.initialization_complete
             
             # 如果设备数量发生变化，更新最后注册时间
@@ -1175,14 +1166,14 @@ def main():
             
             # 检查是否超过10秒没有新设备注册
             if time.time() - last_registration_time >= TIMEOUT and not initialization_complete:
-                if device_count >= 2:  # 确保至少有两个个设备
+                if device_count > 0:  # 确保至少有一个设备
                     # 初始化阶段结束，将当前设备设为工作设备
                     with devices_pool_lock:
                         if not device_pool_manager.initialization_complete:  # 再次检查以避免竞态条件
                             device_pool_manager.set_initialization_complete()
                             # 将设备添加到兼容旧代码的设备集合
                             devices.clear()  # 清空现有设备
-                            for device in device_pool_manager.active_devices:
+                            for device in device_pool_manager.working_devices:
                                 device_entry = {
                                     "ip": device.get("ip"),
                                     "role": device.get("role"),
@@ -1209,16 +1200,9 @@ def main():
             print("初始化失败：没有设备注册")
             return
         
-        print(f"初始化阶段结束，工作设备数: {len(device_pool_manager.active_devices)}")
+        print(f"初始化阶段结束，工作设备数: {len(device_pool_manager.working_devices)}")
         print(f"准备分割模型和发送模型...")
-
-        # 现有的活跃设备转为工作设备
-        device_pool_manager.working_devices = deque(copy.deepcopy(device_pool_manager.active_devices) )
-        # 活跃设备清零
-        device_pool_manager.active_devices.clear()
-        print("工作设备：", device_pool_manager.working_devices)
-
-
+      
         # ============== 模型分割和发送部分 ==============
         if requested_model:
         # 确定模型和量化选项
