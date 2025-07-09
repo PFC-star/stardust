@@ -63,7 +63,7 @@ public class Config {
         this.isTailer = tailer;
     }
 
-    public String getCurrentDeviceIP() {
+    private String getCurrentDeviceIP() {
         try {
             for (Enumeration<NetworkInterface> en = NetworkInterface.getNetworkInterfaces(); en.hasMoreElements();) {
                 NetworkInterface networkInterface = en.nextElement();
@@ -107,7 +107,7 @@ public class Config {
     public boolean isDecoderHeader(){
         return isDecoder;
     }
-
+ 
     public void buildCommunicationGraph(String graph){
         this.ipGraph =  graph.split(",");
 
@@ -133,9 +133,11 @@ public class Config {
         }
     }
 
+     
     public void getDeviceId() {
         if (ipGraph != null) {
             deviceId = Arrays.asList(ipGraph).indexOf(Config.local);
+            Log.e(TAG, String.format("Current deviceId %d",deviceId));
         }else {
             deviceId = -1;
         }

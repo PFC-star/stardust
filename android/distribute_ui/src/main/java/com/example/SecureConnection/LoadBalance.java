@@ -56,7 +56,7 @@ public class LoadBalance {
                     add(sender_seq.getJSONObject(i));
 
                 if (sender_res.has(i)) {
-                    JSONObject obj = sender_res.getJSONObject(i);
+                    JSONObject obj =  sender_res.getJSONObject(i);
                     add(obj);
                     // add all res devices
                     Iterator<String> keys = obj.keys();

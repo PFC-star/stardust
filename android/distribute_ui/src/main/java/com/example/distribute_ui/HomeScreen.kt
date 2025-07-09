@@ -6,6 +6,7 @@ import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.annotation.RequiresApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -82,15 +83,13 @@ fun HomeScreen(
     navController: NavHostController = rememberNavController(),
     onMonitorStarted: () -> Unit,
     onBackendStarted: () -> Unit,
-    onModelSelected: (modelName: String) -> Unit,
+    onModelSelected: (modelName: String) -> Unit,   // 参数为String类型
     viewModel: InferenceViewModel,
-    onRolePassed: (id: Int) -> Unit
+    onRolePassed: (id: Int) -> Unit                 // 参数为Int类型
 ) {
     val configuration = LocalConfiguration.current
     Dim.width = configuration.screenWidthDp
     Dim.height = configuration.screenHeightDp
-    Log.d("test", "${Dim.height}")
-    Log.d("test", "${Dim.width}")
     val context = LocalContext.current
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -175,7 +174,7 @@ fun HomeScreen(
                     )
                 }
                 composable(route = "Chat/{index}", arguments = listOf(navArgument("index"){type = NavType.StringType})) {
-                    NavBackStackEntry: NavBackStackEntry ->
+                        NavBackStackEntry: NavBackStackEntry ->
                     val index = NavBackStackEntry.arguments?.getString("index")
                     index?.let{
                         ChatScreen(index, viewModel = viewModel)
@@ -254,4 +253,3 @@ fun DrawerItem(icon: ImageVector, str: String, color : Color){
         }
     }
 }
-

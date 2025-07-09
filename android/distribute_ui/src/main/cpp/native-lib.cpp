@@ -12,15 +12,14 @@
 #include "android/log.h"
 #include <string>
 
-
 using tokenizers::Tokenizer;
-extern "C" JNIEXPORT jlong JNICALL
-Java_com_example_distribute_1ui_SelectionActivity_createSession(
-        JNIEnv *env, jobject /* this */,
-        jstring inference_model_path){
-    std::unique_ptr<SessionCache> session_cache = std::make_unique<SessionCache>(
-            utils::JString2String(env, inference_model_path));
-    return reinterpret_cast<long>(session_cache.release());
+extern "C" JNIEXPORT jlong JNICALL  // jlong声明返回值类型为Java的long类
+Java_com_example_distribute_1ui_SelectionActivity_createSession(    //<包名>_<类名>_<方法名>
+        JNIEnv *env, jobject /* this */,    // 固定参数
+        jstring inference_model_path){      // jstring类型参数，表示传递给JNI函数的Java字符串
+    std::unique_ptr<SessionCache> session_cache = std::make_unique<SessionCache>(   // 根据字符串创建一个SessionCache类型的指针
+            utils::JString2String(env, inference_model_path));  // 将Java字符串转为C字符串
+    return reinterpret_cast<long>(session_cache.release()); // 将指针转为long类型返回
 }
 
 extern "C" JNIEXPORT jlong JNICALL
@@ -255,9 +254,9 @@ Java_com_example_distribute_1ui_service_MonitorService_modelFlopsPerSecond(JNIEn
                                                                            jint modelFlops, jlong session, jbyteArray data) {
     int model_num_flops = static_cast<int>(modelFlops);
     auto* session_cache = reinterpret_cast<SessionCache *>(session);
-    __android_log_print(ANDROID_LOG_DEBUG, "MyApp_Native", "modelFlops: %d", modelFlops);
+
     std::vector<Ort::Value> ort_tensors;
-    std::vector<int> input_ids ;
+    std::vector<int> input_ids;
 
     __android_log_print(ANDROID_LOG_VERBOSE, "MyApp_Native", "flop function start");
     jint length = env->GetArrayLength(data);
@@ -265,19 +264,10 @@ Java_com_example_distribute_1ui_service_MonitorService_modelFlopsPerSecond(JNIEn
     if (length > 0) {
         jbyte* elements = env->GetByteArrayElements(data, nullptr);
         std::vector<char> bytes(elements, elements + length);
-//       std::vector<int> input_ids(elements, elements + length);
-
-        __android_log_print(ANDROID_LOG_DEBUG, "MyApp_Native", "Array length: %d", length);
         env->ReleaseByteArrayElements(data, elements, 0);
-
         ort_tensors = utils::DeserializeTensorVectorFromBytes(bytes);
-        __android_log_print(ANDROID_LOG_INFO, "MyApp_Native", "ort_tensors shape: [1, %zu]", ort_tensors.size());
         __android_log_print(ANDROID_LOG_VERBOSE, "MyApp_Native", "flop completed");
-        __android_log_print(ANDROID_LOG_VERBOSE, "MyApp_Native", "erroooooooooor");
     }
-
-
-    __android_log_print(ANDROID_LOG_INFO, "MyApp_Native", "Input shape: [1, %zu]", input_ids.size());
 
     // get flops per second in double
     double flops_per_second = inference::flop_per_second_estimation(model_num_flops, session_cache, ort_tensors, input_ids);
@@ -668,15 +658,6 @@ Java_com_example_SecureConnection_Client_createSession(JNIEnv *env, jobject thiz
     return reinterpret_cast<long>(session_cache.release());
 }
 
-extern "C"
-JNIEXPORT jlong JNICALL
-Java_com_example_SecureConnection_Communication_createSession(JNIEnv *env, jobject thiz,
-                                                       jstring inference_model_path) {
-    std::unique_ptr<SessionCache> session_cache = std::make_unique<SessionCache>(
-            utils::JString2String(env, inference_model_path));
-    return reinterpret_cast<long>(session_cache.release());
-}
-
 extern "C" JNIEXPORT void JNICALL
 Java_com_example_SecureConnection_Client_releaseSession(
         JNIEnv *env, jobject /* this */,
@@ -798,14 +779,7 @@ Java_com_example_SecureConnection_Client_createHuggingFaceTokenizer(JNIEnv *env,
     env->ReleaseStringUTFChars(tokenizer_file_path_j, tokenizer_file_path_c);
     return reinterpret_cast<jlong>(tok.release());
 }
-extern "C" [[maybe_unused]] JNIEXPORT jlong JNICALL
-Java_com_example_SecureConnection_Communication_createHuggingFaceTokenizer(JNIEnv *env, jobject /* this */, jstring tokenizer_file_path_j) {
-    const char *tokenizer_file_path_c = env->GetStringUTFChars(tokenizer_file_path_j, nullptr);
-    std::string tokenizer_file_path(tokenizer_file_path_c);
-    auto tok = inference::HuggingFaceTokenizer(tokenizer_file_path);
-    env->ReleaseStringUTFChars(tokenizer_file_path_j, tokenizer_file_path_c);
-    return reinterpret_cast<jlong>(tok.release());
-}
+
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_example_SecureConnection_Client_createSentencePieceTokenizer(JNIEnv *env, jobject /* this */, jstring tokenizer_file_path_j) {
     const char *tokenizer_file_path_c = env->GetStringUTFChars(tokenizer_file_path_j, nullptr);
@@ -974,14 +948,9 @@ Java_com_example_SecureConnection_Communication_runInferenceMasterResidual(JNIEn
     // Converting jintArray to std::vector<int>
     jsize length = env->GetArrayLength(input_ids_j);
     jint *body = env->GetIntArrayElements(input_ids_j, 0);
-
     std::vector<int> input_ids(body, body + length);
     env->ReleaseIntArrayElements(input_ids_j, body, 0);
-    __android_log_print(ANDROID_LOG_DEBUG, "MyApp_Native", "input_ids_length: %zu", length);
 
-//    int model_num_flops = static_cast<int>(3140000000);
-//    double flops_per_second = inference::flop_per_second_estimation(model_num_flops,session_cache, ort_tensors, input_ids);
-//    __android_log_print(ANDROID_LOG_DEBUG, "MyApp_Native", "flops_per_second: %f", flops_per_second);
     auto result = inference::run_inference(session_cache, ort_tensors, input_ids);
     if (result.empty()){
         throw std::runtime_error("inference master has empty ort_tensor logit.");

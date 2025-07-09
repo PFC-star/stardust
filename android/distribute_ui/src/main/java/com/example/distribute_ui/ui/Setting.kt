@@ -1,6 +1,5 @@
 package com.example.distribute_ui.ui
 
-import android.content.Context
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -52,11 +51,11 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.distribute_ui.R
 import com.example.distribute_ui.data.Dim
+import com.example.distribute_ui.data.PreferenceHelper
 import com.example.distribute_ui.data.serverIp
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -81,6 +80,7 @@ fun SettingsScreen(
 
     var showDialog by remember { mutableStateOf(false) }
     var inputText by remember { mutableStateOf("") }
+    val context = LocalContext.current
 
     val pingFont = FontFamily(
         Font(R.font.pingfang_regular)
@@ -161,6 +161,7 @@ fun SettingsScreen(
                 TextButton(
                     onClick = {
                         serverIp = inputText
+                        PreferenceHelper.saveServerIp(context, inputText)
                         showDialog = false
                     }
                 ) {

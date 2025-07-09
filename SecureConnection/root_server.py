@@ -2,6 +2,8 @@
 import json
 import time
 from threading import Thread
+import zmq
+import global_config
 
 """
     R: Ready
@@ -23,7 +25,7 @@ def int_to_bytes(num):
     # If num is a digit between 0-9, return the corresponding character's byte string
     if 0 <= num <= 9:
         return chr(num + ord('0')).encode('utf-8')  # Convert integer to character '0' - '9'
-    # Map other integers to corresponding characters (like uppercase letters)
+    # Other integers are mapped to corresponding characters (such as uppercase letters, etc.)
     elif 32 <= num <= 126:
         return chr(num).encode('utf-8')  # Corresponding printable character
     else:
@@ -35,12 +37,16 @@ def communication_open_close(sender, config, status, conditions, lock, open=True
     while True:
         print('enter communication open close')
         with lock[0]:
+            # print('Start receiving')
             info = sender.recv_multipart()
+
         client_id = info[0]
         msg = info[1]
         print(client_id + msg)
+        # print("Signal received")
         ## Ready
         if open and msg == b'Ready':
+            print("Status Ready")
             ## Open
             if len(info) != 3:
                 print("Error")
@@ -60,7 +66,7 @@ def communication_open_close(sender, config, status, conditions, lock, open=True
                                     json.dumps(config["dependency"]).encode(),
                                     int_to_bytes(config['num_device']),
                                    ])
-
+            
             status[client_id] = b'Open'
             print(f"Status: Open {config['ids'][client_id]}")
 
@@ -90,29 +96,17 @@ def communication_open_close(sender, config, status, conditions, lock, open=True
                 status[client_id] = b'Start'
 
                 print(f"Status: Start {config['ids'][client_id]}")
+        
+        ## Add fault recovery handling - check if there is a state that needs to be recovered
+        elif msg == b'Running' :
+           
+            # Maintain normal Running state handling
+            status[client_id] = b'Running'
+            # If the client does not explicitly notify the running state, a normal response can be sent here
+          
 
-        elif msg == b"Running":
-            # Todo simulate load balance
-            # time.sleep(10)
-            # print(f"{config['ids'][client_id]} Start Load Balance")
-            # # config["session_index"] = ";".join(["0,1", "2,3,4,5,6", "7,8,9"]).encode('utf-8')
-            # sender.send_multipart([client_id, b"re-balance",
-            #                                   config["session_index"],
-            #                                   json.dumps(config["dependency"]).encode()])
-            
-            # if (config["ids"][client_id] == config["head_node"].encode()):
-            #     client_id, msg = sender.recv_multipart()
-            #     config["reload_sampleId"] = msg.decode()
-            #     print(f"The Reload Sample starts from {config['reload_sampleId']}")
-            #     assert config["reload_sampleId"].isdigit(), f"reload sampleId is not an integer string"
-            # else:
-            #     while (config["reload_sampleId"] == None):
-            #         print("Wait the resample ID")
-            #         time.sleep(0.1)
-            
-            #     print(f"Send Reload Sample id : {config['reload_sampleId']} to {config['ids'][client_id]}")
-            #     sender.send_multipart([client_id, "id".encode(), config["reload_sampleId"].encode()])
-            pass
+     
+       
         elif msg == b'Finish':
             status[client_id] = b'Close'
             with conditions[2]:
@@ -123,6 +117,29 @@ def communication_open_close(sender, config, status, conditions, lock, open=True
                 sender.send_multipart([client_id, b"Close"])
             print(f"Close {config['ids'][client_id]}")
             break
+        elif msg == b'Recovery':
+            status[client_id] = b'Recovery'
+            print(f"Status: Recovery {config['ids'][client_id]}")
+            sender.send_multipart([client_id,
+                                      config["graph"],
+                                      config["session_index"],
+                                       json.dumps(config["dependency"]).encode(),
+                                    ])
+        elif msg == b'WaitingStart':
+            status[client_id] = b'WaitingStart'
+            status["status"] = b'WaitingStart'
+            
+            print(f"Status: WaitingStart {config['ids'][client_id]}")
+            while True:
+                time.sleep(1)
+                if "status" in global_config.active_device_status.keys()  and global_config.active_device_status["status"] == b'WaitingStart':
+                # Send start inference signal
+                    sender.send_multipart([client_id, b'ResumeStart'])
+                    status[client_id] = b'ResumeStart'
+                    break
+ 
+                     
+            
 
 def send_model_file(path, sock, client_id, chunked=True, chunk_size=10*1024*1024):
     if not chunked:
@@ -173,7 +190,8 @@ def communication_result_transmission(sender, result, num_devices, tail_client_i
     pass
 
 
-all_status = {b"Ready":  0,
+all_status = {b"Init":  -1,
+              b"Ready":  0,
               b"Open":   1,
               b"Prepare":2,
               b"Initialized": 3,

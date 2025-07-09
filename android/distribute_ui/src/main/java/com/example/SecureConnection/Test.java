@@ -1,12 +1,11 @@
 package com.example.SecureConnection;
 
 import android.os.AsyncTask;
-
 import org.zeromq.SocketType;
 import org.zeromq.ZContext;
 import org.zeromq.ZMQ;
-
 import java.nio.charset.StandardCharsets;
+
 public class Test {
     private static final String PING = "ping";
     private static final String PONG = "pong";

@@ -400,7 +400,4 @@ namespace inference{
 
         return combined;
     }
-
-
-
 }

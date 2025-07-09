@@ -28,7 +28,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.distribute_ui.R
-import com.google.accompanist.systemuicontroller.rememberSystemUiController
 import kotlinx.coroutines.delay
 
 @Composable
@@ -45,8 +44,8 @@ fun SplashScreen(onAnimationEnd: () -> Unit){
 
     LaunchedEffect(Unit) {
         startAnimation = true
-        delay(100) // Display time
-        onAnimationEnd() // Callback after animation ends
+        delay(100) // 停留时间
+        onAnimationEnd() // 动画结束后回调
     }
 
     Box(
@@ -59,10 +58,10 @@ fun SplashScreen(onAnimationEnd: () -> Unit){
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(top = 50.dp) // Image distance from screen top
+                .padding(top = 50.dp) // 图片距离屏幕顶部 100dp
         ) {
             Image(
-                painter = painterResource(id = R.drawable.icon_1),  // Replace with your image resource
+                painter = painterResource(id = R.drawable.icon_1),  // 替换为你的图片资源
                 contentDescription = "",
                 modifier = Modifier
                     .padding(start = 50.dp, end = 50.dp)
@@ -79,16 +78,16 @@ fun SplashScreen(onAnimationEnd: () -> Unit){
                 Text(
                     text = "StarDust",
                     color = Color.White,
-                    fontSize = 42.sp, // Font size 42sp
+                    fontSize = 42.sp, // 字号 20sp
                     fontFamily = moFont,
                     letterSpacing = 6.sp,
-                    fontWeight = FontWeight.Bold // Bold text
+                    fontWeight = FontWeight.Bold // 加粗
                 )
-                Spacer(modifier = Modifier.height(20.dp)) // 20dp spacing between texts
+                Spacer(modifier = Modifier.height(20.dp)) // 第二行文本间隔 20dp
                 Text(
-                    text = "No model too large to run",
+                    text = "让世界没有推不起来的模型",
                     color = Color.White,
-                    fontSize = 20.sp, // Font size 20sp
+                    fontSize = 20.sp, // 字号 16sp
                     fontWeight = FontWeight.Normal,
                     fontFamily = pingFont,
                     letterSpacing = 4.sp

@@ -12,7 +12,7 @@ public class EndProcess implements Runnable{
     private Communication com;
     private final Semaphore latch;
     private final Map<Integer, ZMQ.Socket> serverSocket;
-    private final Map<Integer, ZMQ.Socket>  clientSocket;
+    private final Map<Integer, ZMQ.Socket> clientSocket;
 
     public EndProcess(Config cfg, Communication com, Semaphore latch) {
         this.com = com;

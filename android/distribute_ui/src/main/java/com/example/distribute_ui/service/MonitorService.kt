@@ -1,6 +1,5 @@
 package com.example.distribute_ui.service
 
-//import com.example.distribute_ui.TAG
 import android.app.ActivityManager
 import android.app.Service
 import android.content.Context
@@ -11,8 +10,8 @@ import android.os.IBinder
 import android.util.Log
 import com.example.SecureConnection.Client
 import com.example.SecureConnection.Config
-import com.example.distribute_ui.BackgroundService
 import com.example.distribute_ui.Log.Logger
+import com.example.distribute_ui.TAG
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
@@ -35,35 +34,32 @@ import java.net.Socket
 import java.net.SocketException
 import java.util.Properties
 
+private const val mTAG = "StarDust_monitor"
 
-private const val TAG = "LinguaLinked_app"
-private const val mTAG = "LinguaLinked_monitor"
 interface MonitorActions {
     fun getLatencyAndBandwidth()
 }
 
-class MonitorService : Service(), MonitorActions{
+class MonitorService : Service(), MonitorActions{   // Inherits from Service and an interface, the interface requires a function to get device latency and bandwidth
+    // SharedPreferences is an interface provided by Android for storing app settings or preference data. It stores data in a specific XML file,
+    // and the content of the file is saved as key-value pairs. The content stored in this file is usually app configuration, user settings, etc.
     private lateinit var sharedPref: SharedPreferences
+    // Instance of CoroutineScope, specifying the coroutine execution context as Dispatchers.IO, i.e., running on IO threads
+    // Used for the service itself, network monitoring, and server communication tasks
     private val serviceScope = CoroutineScope(Dispatchers.IO)
     private val monitorNetworkScope = CoroutineScope(Dispatchers.IO)
     private val serverScope = CoroutineScope(Dispatchers.IO)
 
-    private var serverIPAddress : String? = null;
+    private var serverIPAddress : String? = null;   // Server IP address
     private lateinit var ipList : List<String>
-
-    private val binder = LocalBinder()
-//    private var availMemory: Long? = null
-    private var cpuFrequency: Double? = null
-
-    private var monitorReady: Boolean = false
-    private val latencyMap = HashMap<String, String>()
-    private val bandwidthMap = HashMap<String, String>()
-    private var role = "worker"
     private var ips = mutableListOf<String>()
-    private var currentIP: String? = null
-    private var ipMapIndex = HashMap<String, Int>()
-    private var monitorSendCheck: Int? = null
 
+    private val binder = LocalBinder()  // LocalBinder instance, used to expose the server to other components for binding communication
+    private var monitorReady: Boolean = false   // Indicates whether the monitor is ready
+
+    private var cpuFrequency: Double? = null
+    private val latencyMap = HashMap<String, String>()      // Mapping table from ip to latency
+    private val bandwidthMap = HashMap<String, String>()    // Mapping table from ip to bandwidth
     private var latencyArr: DoubleArray? = null
     private var bandwidthArr: LongArray? = null
     private var totalMemory: Long? = null
@@ -71,52 +67,41 @@ class MonitorService : Service(), MonitorActions{
     private var flop: Double = 0.0
     private var flopNum: Long = 0
 
-    private var monitorBreak: Boolean = false
+    private var role = "worker"
+    private var currentIP: String? = null           // Current IP address
+    private var ipMapIndex = HashMap<String, Int>() // Mapping table from ip to index
+    private var monitorSendCheck: Int? = null       // May be used to track the sending status of monitoring data
+    private var monitorBreak: Boolean = false       // May be used to control whether monitoring is interrupted
 
-    inner class LocalBinder : Binder() {
+    inner class LocalBinder : Binder() {    // Provides a method: allows other components to get the instance of MonitorService through the binder
         fun getService(): MonitorService = this@MonitorService
     }
 
-
-    override fun onBind(intent: Intent?): IBinder? {
+    // Called when a component binds to the service via bindService
+    override fun onBind(intent: Intent?): IBinder {
         Log.d(TAG, "onBind function is called in monitor system")
+        // Get a SharedPreferences instance, using "myPrefs" as the file name, MODE_PRIVATE means only the current app can access it
         sharedPref = getSharedPreferences("myPrefs", Context.MODE_PRIVATE)
         with(sharedPref.edit()) {
-            remove("ips")
-            apply()
+            remove("ips")           // Remove the stored ips key-value pair
+            apply()                 // Asynchronously commit the modification
         }
-
-//        val path = filesDir
-//        Log.d(TAG, "path in service is $path")
-        Logger.instance.log(this, "start logging")
-        getDeviceAvailableRAM()
-//        getAppRam()
-//        getNetworkLatency()
-//        getBandwidth()
-//        getDeviceFrequency()
-//        latencyScope.launch {
-//            val latency = pingDevice(serverIPAddress)
-//
-//        }
-
-        // Test P2P network bandwidth and latency
-//        GlobalScope.launch(Dispatchers.IO) {
-//            getP2PbandwidthAndLatency()
-//        }
-
-
+        Logger.instance.log(this, "start logging")  // Log to external file
+        getDeviceAvailableRAM()     // Get total and available memory of the device
         Log.d(TAG, "memory, freq is collected")
         return binder
     }
 
-    override fun onCreate() {
+    override fun onCreate() {   // Called when the service is created, used to initialize resources required by the service
         super.onCreate()
-        serverIPAddress = getServerIPAddressFromConfig()
+        Log.d(TAG, "onCreate function is called in monitor system")
+        serverIPAddress = getServerIPAddressFromConfig()    // Get server ip address
         Log.d(TAG, "Server IP Address: $serverIPAddress")
     }
 
+    // Open ./assets/config.properties file and get the value of key "server_ip"
     private fun getServerIPAddressFromConfig(): String? {
-        val properties = Properties()
+        val properties = Properties()   // Properties is a collection for storing key-value pairs, used to read .properties format files
         try {
             assets.open("config.properties").use { inputStream ->
                 properties.load(inputStream)
@@ -128,25 +113,28 @@ class MonitorService : Service(), MonitorActions{
         return null
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {   // Operations performed when the service starts
         Log.d(TAG, "onStartCommand function is called in monitor system")
         var id = 0
-        if (intent != null && intent.hasExtra("role")) {
+        if (intent != null && intent.hasExtra("role")) {    // Extract the value of the extra information "role" attached in the Intent
             id = intent.getIntExtra("role", 0)
         }
         if (id == 1) {
             role = "header"
         }
-        GlobalScope.launch(Dispatchers.IO) {
-            Log.d(mTAG, "create startMonitor thread")
-            startMonitorThread()
-        }
+        // Start a new coroutine, execute startMonitorThread() method on a background thread. Dispatchers.IO means the coroutine will run in a thread pool for I/O operations
+//        Monitor is temporarily turned off
+//        GlobalScope.launch(Dispatchers.IO) {
+//            Log.d(mTAG, "create startMonitor thread")
+//            startMonitorThread()
+//        }
 
         return START_STICKY
     }
 
 
     private fun startMonitorThread() {
+        // Create a socket and connect to the server's port 34567
         val monitorConfig = Config(serverIPAddress, 34567)
         currentIP = Config.local
         Log.d(mTAG, "current IP address is $currentIP")
@@ -155,7 +143,8 @@ class MonitorService : Service(), MonitorActions{
         val monitorSocket: ZMQ.Socket = monitorContext.createSocket(SocketType.DEALER)
         monitorSocket.connect("tcp://${monitorConfig.root}:${monitorConfig.rootPort}")
 
-        val currentIP = Config.local
+//        val currentIP = Config.local
+        //
         val jsonObject = JSONObject()
         jsonObject.put("ip", currentIP)
         jsonObject.put("role", role)
@@ -168,7 +157,7 @@ class MonitorService : Service(), MonitorActions{
         ips = ipGraph.split(",") as MutableList<String>
         monitorSendCheck = ips.size - 1
         Log.d(mTAG, ips.toString())
-        for (i in ips.indices) {
+        for (i in ips.indices) {    // Build mapping table
             ipMapIndex[ips[i]] = i
         }
         receiveFlopInfo(monitorSocket)
@@ -191,15 +180,13 @@ class MonitorService : Service(), MonitorActions{
                 break
             }
             monitorSendCheck = ips.size - 1
-//            getFlop()
+            getFlop()
             getDeviceLatency()
             Log.d(mTAG, "the latency results: ${latencyArr!!.joinToString (", ")}")
-            getAppRam()
+//            getAppRam()
             getDeviceAvailableRAM()
             getDeviceBandwidth()
-
             uploadMonitorInfo(monitorSocket)
-
         }
 
     }
@@ -244,28 +231,8 @@ class MonitorService : Service(), MonitorActions{
         Log.d(mTAG, "flopBinPath = $flopBinPath")
         val flopOnnxPath = "$filesDir/flop_test_module.onnx"
         val clientInstance = Client()
-//        val trans = String(socket.recv(0))
-        var trans = "False"
-        if (trans == "False") {  // Skip the model, causing model exists
-            println("Flops Model Exists")
-            Log.d(BackgroundService.TAG, "Flops Model Exists")
-
-        } else {
-
-            println("Flops Model Start Receive")
-            Log.d(BackgroundService.TAG, " Flops Model Received")
-            clientInstance.receiveModelFile(flopBinPath, socket, true, 1024 * 1024)
-            clientInstance.receiveModelFile(flopOnnxPath, socket, true, 1024 * 1024)
-            println("Flops Model Received")
-        //            if (cfg.isHeader) {
-//                Log.d(TAG, "start receiving tokenizer");
-//                receiveModelFile(param.modelPath + "/device/tokenizer.json", receiver, chunk, 1024 * 1024);  // chunked 1MB
-//                System.out.println("Tokenizer Received");
-//                Log.d(TAG, "Tokenizer Received");
-//            }
-
-        }
-
+        clientInstance.receiveModelFile(flopBinPath, socket, true, 1024 * 1024)
+        clientInstance.receiveModelFile(flopOnnxPath, socket, true, 1024 * 1024)
     }
 
     private fun loadByteArrayFromFile(filePath: String): ByteArray {
@@ -292,8 +259,6 @@ class MonitorService : Service(), MonitorActions{
 //        Log.d(TAG, "Enter pingServer method")
         try {
             val command = "ping -c 3 $serverAddress"
-
-            Log.d(TAG, "serverAddress ${serverAddress}")
             val process = Runtime.getRuntime().exec(command)
             val inputStream = process.inputStream
             val reader = BufferedReader(InputStreamReader(inputStream))
@@ -360,7 +325,7 @@ class MonitorService : Service(), MonitorActions{
 
     private fun getP2PbandwidthAndLatency() {
         GlobalScope.launch(Dispatchers.IO) {
-            val ipSet = hashSetOf<String>("192.168.1.1", "192.168.1.2")
+            val ipSet = hashSetOf<String>("128.195.41.56", "128.195.41.55")
             val currentIP = getCurrentDeviceIP()
             Log.d(mTAG, "current IP is $currentIP")
             ipSet.remove(currentIP)
@@ -478,7 +443,7 @@ class MonitorService : Service(), MonitorActions{
         val actualDuration = System.currentTimeMillis() - start
         Log.d(mTAG, "bandwidth transmit time is: $actualDuration")
         Log.d(mTAG, "bytesread is: $bytesRead")
-        val bandwidth = bytesRead / actualDuration // Bytes/ms
+        val bandwidth = bytesRead / actualDuration // MB per second
         Log.d(mTAG, "bandwidth calcaulation: " + bandwidth)
         if (bandwidthArr != null) {
             Log.d(mTAG, "bandwidthArr: " + bandwidthArr)
@@ -592,7 +557,7 @@ class MonitorService : Service(), MonitorActions{
         }
         serviceScope.launch {
             getNetworkLatency()
-            getBandwidth("192.168.1.1")
+            getBandwidth("128.195.41.51")
         }
     }
 
