@@ -812,7 +812,97 @@ def handle_device_registration_and_heartbeat(socket, port):
                             print(f"设备 {device_id} 心跳更新失败")
                     except zmq.error.ZMQError as e:
                         print(f"发送心跳响应时出错: {e}")
-                
+
+                # 后台+亮屏
+                elif action == "HEARTBEAT_InBackground_ScreenOn":
+                    # 处理心跳消息 - 使用唯一标识符的十六进制表示作为设备ID
+                    device_id = identifier.hex() if isinstance(identifier, bytes) else str(identifier)
+
+                    # 更新设备标识符映射
+                    with device_identifiers_lock:
+                        device_identifiers_map[device_id] = identifier
+
+                    if not device_id:
+                        print("警告: 心跳消息缺少设备ID")
+                        socket.send_multipart([identifier, b"HEARTBEAT_FAILED"])
+                        continue
+
+                    # 不更新心跳时间，强制进入故障状态
+                    success = True
+
+                    # 发送响应，包含系统状态信息
+                    try:
+                        if success:
+                            # 检查系统是否有故障，但避免在故障处理过程中重复检测
+                            if not system_handling_failure:
+                                system_has_failures = (
+                                        len(device_pool_manager.failed_working_devices) > 0 or
+                                        len(device_pool_manager.failed_active_devices) > 0
+                                )
+
+                                if system_has_failures:
+                                    # 设置故障处理标志，避免重复触发
+                                    system_handling_failure = True
+
+                                    # 先通知当前心跳的设备
+                                    socket.send_multipart([identifier, b"HEARTBEAT_RECEIVED", b"SYSTEM_InBackground_ScreenOn"])
+                                    print(f"设备 {device_id} 心跳响应：SYSTEM_InBackground_ScreenOn,正在进入重启状态")
+
+                                    # 异步触发故障处理，避免阻塞心跳响应线程
+                                    def trigger_failure_handling():
+                                        try:
+                                            # 先通知所有在线设备系统故障状态
+                                            notify_all_devices = []
+                                            device_identifiers = {}
+
+                                            # 收集所有在线设备的标识符
+                                            with device_identifiers_lock:
+                                                for dev_id, dev_identifier in device_identifiers_map.items():
+                                                    # 排除当前已通知的设备
+                                                    if dev_id != device_id:
+                                                        notify_all_devices.append(dev_id)
+                                                        device_identifiers[dev_id] = dev_identifier
+
+                                            print(f"正在通知其他 {len(notify_all_devices)} 个设备系统故障状态...")
+
+                                            # 发送故障通知给所有收集到的设备
+                                            for dev_id in notify_all_devices:
+                                                try:
+                                                    dev_identifier = device_identifiers[dev_id]
+                                                    socket.send_multipart(
+                                                        [dev_identifier, b"HEARTBEAT_RECEIVED", b"SYSTEM_FAILURE"])
+                                                    print(f"通知设备 {dev_id} 系统故障状态")
+                                                except Exception as e:
+                                                    print(f"通知设备 {dev_id} 失败: {e}")
+
+                                            # 服务器端进入故障处理流程
+                                            handle_system_failure()
+
+                                            # 故障处理完成后，重置标志
+                                            nonlocal system_handling_failure
+                                            system_handling_failure = False
+                                        except Exception as e:
+                                            print(f"故障处理过程中出错: {e}")
+                                            system_handling_failure = False  # 确保出错时也重置标志
+
+                                    # 启动一个线程进行故障处理
+                                    failure_thread = threading.Thread(target=trigger_failure_handling)
+                                    failure_thread.daemon = True
+                                    failure_thread.start()
+                                else:
+                                    # 系统正常
+                                    socket.send_multipart([identifier, b"HEARTBEAT_RECEIVED", b"SYSTEM_NORMAL"])
+                                    # print(f"设备 {device_id} 心跳响应：系统正常")
+                            else:
+                                # 系统正在处理故障，告知客户端等待
+                                socket.send_multipart(
+                                    [identifier, b"HEARTBEAT_RECEIVED", b"SYSTEM_HANDLING_FAILURE"])
+                                print(f"设备 {device_id} 心跳响应：系统正在处理故障")
+                        else:
+                            socket.send_multipart([identifier, b"HEARTBEAT_FAILED"])
+                            print(f"设备 {device_id} 心跳更新失败")
+                    except zmq.error.ZMQError as e:
+                        print(f"发送心跳响应时出错: {e}")
                 # 处理故障恢复确认
                 elif action == "FAILURE_RECOVERY_ACK":
                     device_id = identifier.hex() if isinstance(identifier, bytes) else str(identifier)
