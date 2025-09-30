@@ -9,6 +9,7 @@ from SecureConnection import monitor
 from SecureConnection.root_server import int_to_bytes,communication_prepare
 import threading
 import torch
+import uuid
 import numpy as np
 import heapq
 import json
@@ -178,11 +179,15 @@ def communication_open_close_active(sender, config, device_id, status, lock, ope
 class DevicePoolManager:
     def __init__(self):
         # 使用线程安全的数据结构
-        self.device_pool = deque()            # 全部已注册活跃设备池（非工作设备）
-        self.working_devices = deque()        # 工作设备池（初始阶段注册的设备）
-        self.active_devices =    deque()         # {task_id: device_list} 当前活跃任务使用的设备
-        self.failed_working_devices = deque() # 工作设备故障池
-        self.failed_active_devices = deque()  # 活跃设备故障池
+        self.device_pool = deque()            # 全部已注册活跃设备池
+        self.active_devices = deque() # 尚未工作的设备
+        self.working_devices = deque() # 正在工作的设备(包含候选工作设备）
+        self.alt_working_devices = deque # 候选工作的设备
+        # self.single_working_group = dict() # 每一组包含一个header，worker，待恢复worker
+        self.working_groups = dict() # 包含single_working_group
+        self.failed_active_devices = deque() # 包含所有的活跃设备池故障
+
+
         self.task_counter = 0
         
         # 使用原子操作来管理设备状态
@@ -190,14 +195,14 @@ class DevicePoolManager:
         self.device_heartbeats = {}           # 记录设备最后心跳时间
         self.heartbeat_timeout = 3          # 心跳超时时间(秒)
         self.heartbeat_check_interval = 1   # 心跳检查间隔(秒)
+        self.create_group_check_interval = 10  # 心跳检查间隔(秒)
         self.initialization_complete = False  # 标记是否完成初始化阶段
         self.active_device_threads = {}       # 存储活跃设备通信线程
 
     def set_initialization_complete(self):
         """标记初始化阶段已完成，将当前设备池中的设备设为工作设备"""
         # 使用原子操作来更新设备池
-        # self.working_devices = deque(self.device_pool)
-        # self.device_pool.clear()
+
         self.initialization_complete = True
         
         print(f"初始化阶段完成！共有 {len(self.working_devices)} 个工作设备")
@@ -226,7 +231,8 @@ class DevicePoolManager:
         try:
             device_id = device_info.get("device_id")
             ip = device_info.get("ip")
-            
+            role = device_info.get("role")
+            status = device_info.get("status")
             if not device_id or not ip:
                 print("错误: 设备注册没有提供ID或IP地址")
                 return False
@@ -239,58 +245,27 @@ class DevicePoolManager:
             # 检查设备是否已存在
             device_exists = False
             device_in_working_pool = False
-            
-            # 检查工作设备池
-            for device in self.working_devices:
-                if device.get("device_id") == device_id:
-                    device.update(device_info)
-                    device_exists = True
-                    device_in_working_pool = True
-                    print(f"设备已在工作设备池中，已更新: ID={device_id}, IP={ip}")
-                    break
-            
-            # 如果不在工作设备池中，检查活跃设备池
-            if not device_exists:
-                for device in self.active_devices:
-                    if device.get("device_id") == device_id:
-                        device.update(device_info)
-                        device_exists = True
-                        print(f"设备已在活跃设备池中，已更新: ID={device_id}, IP={ip}")
-                        break
-            
-            # 如果已存在，更新设备状态
-            if device_exists:
-                status = "working" if device_in_working_pool else "active"
-                self.device_status[device_id] = {
-                    "status": status,
-                    "last_heartbeat": current_time,
-                    "info": device_info.copy()
-                }
-                print(f"更新设备状态: ID={device_id}, 状态={status}")
-                return status
-            
+
             # 设备不存在，需要添加
-            if self.initialization_complete:
-                # 初始化完成后，新设备直接添加到活跃设备池
-                self.active_devices.append(device_info)
-                status = "active"
-                print(f"运行阶段 - 新设备已注册为活跃设备: ID={device_id}, IP={ip}")
-                
-                # 为新注册的活跃设备创建通信线程
-                self.start_active_device_thread(device_id)
-            else:
-                # 初始化阶段，添加到工作设备池
-                self.working_devices.append(device_info)
-                status = "working"
-                print(f"初始化阶段 - 新设备已注册为工作设备: ID={device_id}, IP={ip}, 角色={device_info.get('role')}")
-            
+
+
+
+            self.active_devices.append(device_info)
+
+
+
+            print(f"新设备已注册为活跃设备: ID={device_id}, IP={ip},status = {status}")
+
+
             # 更新设备状态（原子操作）
             self.device_status[device_id] = {
                 "status": status,
                 "last_heartbeat": current_time,
                 "info": device_info.copy()
             }
-            
+
+            # 注册心跳，只要放到设备池中，就会有心跳，不过APP端需要修改，让心跳响应立即运行
+
             # 打印设备池状态
             self.printInfo()
             return status
@@ -300,7 +275,127 @@ class DevicePoolManager:
             import traceback
             traceback.print_exc()
             return False
-    
+
+    def start_create_device_group_thread(self, device_info):
+        """创建设备组"""
+        try:
+            device_id = device_info.get("device_id")
+            # 检查线程是否已经存在
+            if device_id in self.active_device_threads and self.active_device_threads[device_id].is_alive():
+                print(f"活跃设备 {device_id} 已有通信线程在运行")
+                return
+
+            # 状态将在通信过程中由消息交换决定，不预先设置
+
+            # 获取活跃设备信息
+            active_device_info = None
+            for device in self.active_devices:
+                if device.get("device_id") == device_id:
+                    active_device_info = device
+                    break
+
+            if not active_device_info:
+                print(f"错误: 无法找到活跃设备 {device_id} 的信息")
+                return
+
+            # 获取头节点（工作设备池的第一个设备）
+            head_device = None
+            if self.working_devices:
+                head_device = self.working_devices[0]
+            else:
+                print(f"警告: 工作设备池为空，无法确定头节点")
+                return
+
+            # 首先获取原始的ip_module信息
+            active_device_ip = active_device_info.get("ip", "")
+
+            # 获取全局配置
+            global config, root_dir, Quntization_Option, requested_model
+
+            # 确定模型名称和量化选项
+
+            # 创建修改后的ip_module，将第二个IP替换为活跃设备的IP
+            modified_ip_module = [
+                [head_device.get("ip", ""),
+                 f"/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_unquantized_res/device0/module0/module.zip"],
+                [active_device_ip,
+                 f"/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_unquantized_res/device1/module1/module.zip"]
+            ]
+
+            print(f"为活跃设备 {device_id} 创建修改后的ip_module:")
+            print(modified_ip_module)
+
+            # 获取送信目录
+            to_send_path = retrieve_sending_dir(root_dir, requested_model,
+                                                quantization_option=Quntization_Option,
+                                                residual_connection=residual_connection_option)
+
+            # 使用retrieve_file_cfg获取文件配置
+            file_cfg = retrieve_file_cfg(modified_ip_module)
+
+            # 使用retrieve_sending_info获取图和依赖信息
+            ip_graph, dependencyMap = retrieve_sending_info(
+                root_dir, requested_model,
+                ip_module_list=modified_ip_module,
+                quantization_option=Quntization_Option,
+                residual_connection=residual_connection_option
+            )
+
+            # 创建会话索引
+            session = ["0", "1"]  # 简单的会话索引
+
+            # 创建预填充的device_config
+            device_config = {
+                "device_id": device_id,
+                "ids": {},
+                "file_path": file_cfg,
+                "head_node": ip_graph[0],
+                "tail_node": ip_graph[-1],
+                "graph": ",".join(ip_graph).encode('utf-8'),
+                "session_index": ";".join(session).encode('utf-8'),
+                "task_type": b"generation",
+                "core_pool_size": b"1",
+                "num_sample": b"1000",
+                "max_length": b"500",
+                "num_device": 2,  # 头节点和活跃设备共2个
+                "skip_model_transmission": True,
+                "dependency": dependencyMap
+            }
+            for idx, fPath in dependencyMap.items():
+                file = open(fPath, "r")
+                data = json.load(file)
+                device_config["dependency"][idx] = data
+            print(f"device_config: {device_config}")
+            # # 添加设备ID映射
+            # device_config["ids"][head_device.get("device_id", "")] = head_device.get("ip", "").encode('utf-8')
+            # device_config["ids"][device_id] = active_device_ip.encode('utf-8')
+
+            # 打印生成的配置信息
+            print(f"为活跃设备 {device_id} 创建预填充配置:")
+            print(f"  头节点: {device_config['head_node']}")
+            print(f"  尾节点: {device_config['tail_node']}")
+            print(f"  IP图: {device_config['graph']}")
+            print(f"  会话索引: {device_config['session_index']}")
+
+            # 创建通信线程
+            global active_socket
+            thread = threading.Thread(
+                target=communication_open_close_active,
+                args=(active_socket, device_config, device_id, global_config.active_device_status,
+                      [threading.Lock(), threading.Lock()]),
+                daemon=True
+            )
+            thread.name = f"ActiveDevice-{device_id}"
+            thread.start()
+
+            # 保存线程引用
+            self.active_device_threads[device_id] = thread
+            print(f"已为活跃设备 {device_id} 启动通信线程")
+
+        except Exception as e:
+            print(f"为活跃设备 {device_id} 启动通信线程时出错: {e}")
+            traceback.print_exc()
+
     def start_active_device_thread(self, device_id):
         """为活跃设备启动控制通信线程"""
         try:
@@ -309,9 +404,7 @@ class DevicePoolManager:
                 print(f"活跃设备 {device_id} 已有通信线程在运行")
                 return
             
-            # 创建状态字典
-           
-                
+
             
             # 状态将在通信过程中由消息交换决定，不预先设置
             
@@ -467,6 +560,78 @@ class DevicePoolManager:
 # 创建设备池管理器实例
 device_pool_manager = DevicePoolManager()
 
+import queue
+
+def create_group_thread_t():
+    """建组进程"""
+    print("建组进程线程已启动，当前组情况\n个数：{}\n详细情况：{}".format(
+        len(device_pool_manager.working_groups.keys()),
+        device_pool_manager.working_groups
+    ))
+
+    while True:
+        try:
+            # 统计数量
+            active_header_devices = 0
+            active_worker_devices = 0
+            for device_info in device_pool_manager.active_devices:
+                if device_info.get("role") == "header":
+                    active_header_devices += 1
+                if device_info.get("role") == "worker":
+                    active_worker_devices += 1
+
+            if active_header_devices >= 1 and active_worker_devices >= 2:
+                # 创建新组
+                single_working_group = queue.Queue()
+                worker_index = 0
+                header_index = 0
+                devices_to_remove = []
+                active_header_device = None
+                active_worker_device = None
+                active_alt_worker_device = None
+
+                # 收集设备
+                for i, device_info in enumerate(device_pool_manager.active_devices):
+                    if device_info.get("role") == "header" and header_index == 0:
+                        active_header_device = device_info
+                        header_index += 1
+                        devices_to_remove.append(i)
+                    elif device_info.get("role") == "worker" and worker_index < 2:
+                        if worker_index == 0:
+                            active_worker_device = device_info
+                        elif worker_index == 1:
+                            active_alt_worker_device = device_info
+                        worker_index += 1
+                        devices_to_remove.append(i)
+
+                # 删除已选设备
+                for index in sorted(devices_to_remove, reverse=True):
+                    device_pool_manager.active_devices.pop(index)
+
+                # 添加到队列
+                single_working_group.put(active_header_device)
+                single_working_group.put(active_worker_device)
+                single_working_group.put(active_alt_worker_device)
+
+                # 启动设备通信线程
+                device_pool_manager.start_create_device_group_thread(active_header_device)
+                device_pool_manager.start_create_device_group_thread(active_worker_device)
+                device_pool_manager.start_create_device_group_thread(active_alt_worker_device)
+
+                # 使用动态 groupID
+
+
+                groupID = str(uuid.uuid4())  # 生成唯一字符串 ID
+                device_pool_manager.working_groups.update({groupID: single_working_group})
+
+        except Exception as e:
+            print(f"建组线程出错: {e}")
+            import traceback
+            traceback.print_exc()
+        # 等待下一次检查
+        time.sleep(device_pool_manager.create_group_check_interval)
+
+
 def heartbeat_check_thread():
     """心跳检查线程"""
     print("心跳检查线程已启动，每 {} 秒检查一次设备心跳状态，超时时间 {} 秒".format(
@@ -484,10 +649,12 @@ def heartbeat_check_thread():
             
             # 获取故障前的设备状态
             before_count = {
-                'working': len(device_pool_manager.working_devices),
-                'active': len(device_pool_manager.active_devices),
-                'failed_working': len(device_pool_manager.failed_working_devices),
-                'failed_active': len(device_pool_manager.failed_active_devices)
+                'active_header_devices': len(device_pool_manager.active_header_devices),
+                'active_worker_devices': len(device_pool_manager.active_worker_devices),
+                'working_groups': len(device_pool_manager.working_groups),
+                'failed_working_header_devices': len(device_pool_manager.failed_working_header_devices),
+                'failed_working_worker_devices': len(device_pool_manager.failed_working_worker_devices),
+                'failed_working_alt_worker_devices': len(device_pool_manager.failed_working_alt_worker_devices)
             }
             
             # 不持有锁的情况下收集超时设备
@@ -504,7 +671,9 @@ def heartbeat_check_thread():
                     clean_status = "failed_" + current_status.split("failed_")[-1]
                     device_pool_manager.device_status[device_id]["status"] = clean_status
                     current_status = clean_status
-                
+
+
+
                 # 如果设备心跳超时且不是已经处理过的故障设备，标记为失败
                 if heartbeat_age > device_pool_manager.heartbeat_timeout and device_id not in already_processed_failures:
                     # 确定设备在哪个池
@@ -537,18 +706,19 @@ def heartbeat_check_thread():
                 # 根据设备状态处理故障
                 if status == "working":
                     # 从工作设备池中移除
-                    for i, device in enumerate(device_pool_manager.working_devices):
-                        if device.get("device_id") == device_id:
-                            device_pool_manager.working_devices.remove(device)
-                            device_pool_manager.failed_working_devices.append(device_info)
-                            print(f"工作设备 {device_id} 已移至故障池")
-                            failures_count += 1
-                            break
+                    for groupId, single_working_group in  device_pool_manager.working_groups.items():
+                        for role,device in single_working_group.items():
+                            if device.get("device_id") == device_id:
+                                single_working_group.update({})
+                                device_pool_manager.failed_working_devices.append(device_info)
+                                print(f"工作设备 {device_id} 已移至故障池")
+                                failures_count += 1
+                                break
                 elif status == "active":
                     # 从活跃设备池中移除
-                    for i, device in enumerate(device_pool_manager.active_devices):
-                        if device.get("device_id") == device_id:
-                            device_pool_manager.active_devices.remove(device)
+                    for i, device in enumerate(device_pool_manager.active_header_devices):
+                        if device.get("device_id") == device_id and device_info.get("role")=="header":
+                            device_pool_manager.active_header_devices.remove(device)
                             device_pool_manager.failed_active_devices.append(device_info)
                             print(f"活跃设备 {device_id} 已移至故障池")
                             failures_count += 1
@@ -690,13 +860,14 @@ def handle_device_registration_and_heartbeat(socket, port):
                         device_identifiers_map[device_id] = identifier
                         print(f"设备标识符已保存: {device_id}")
                     
-                    device = {
+                    device_info = {
                         "device_id": device_id,
                         "ip": ip,
                         "role": role,
                         "device_type": "mobile",  # 默认设备类型
                         "os": "android",  # 默认操作系统
-                        "model": model_request  # 保存请求的模型
+                        "model": model_request , # 保存请求的模型
+                        "status": "Registering"
                     }
                     
                     print(f"处理设备注册: ID={device_id}, IP={ip}, 角色={role}")
@@ -707,7 +878,7 @@ def handle_device_registration_and_heartbeat(socket, port):
                         print(f"将设备标识符添加到ip_graph_requested")
                     
                     # 注册设备
-                    status = device_pool_manager.register_device(device)
+                    status = device_pool_manager.register_device(device_info)
                     print("status:",status)
                     # 发送响应消息
                     try:
@@ -1232,7 +1403,13 @@ def main():
             daemon=True
         )
         heartbeat_thread.start()
-        
+
+        # 启动建组线程
+        create_group_thread = threading.Thread(
+            target=create_group_thread_t,
+            daemon=True
+        )
+        create_group_thread.start()
         # 等待初始化阶段完成
         print("等待初始化阶段完成...")
         initialization_complete = False
