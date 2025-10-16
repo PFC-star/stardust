@@ -3,6 +3,7 @@ import os
 # os.environ["DS_ACCELERATOR"]='cpu'
 import time
 import zmq
+import copy
 from SecureConnection import root_server
 from SecureConnection import server
 from SecureConnection import monitor
@@ -14,6 +15,9 @@ import numpy as np
 import heapq
 import json
 import os
+from threading import Event, Condition
+from collections import deque
+from queue import Queue, Empty
 from collections import deque
 from util.model_card import available_models, ModelCard, retrieve_sending_dir, retrieve_sending_info, retrieve_file_cfg
 from system_pipeline.onnx_backend.optimization import Optimizer
@@ -21,8 +25,12 @@ import socket
 import traceback
 import datetime
 from web_monitor import start_web_server
+
+import queue
+
 monitor_receive_interval = 10  # set intervals for receiving monitor info from clients
-monitor_port = "34567"  # set server port to receive monitor info
+monitor_port = "34568"  # set server port to receive monitor info
+monitor_port_2 = "34567"
 active_device_port = "23457"  # port for active device communication
 TIMEOUT =10 # Time to wait for new devices to connect to servers
 MODEL_EXIST_ON_DEVICE = True  # set True if the model exists on the mobile device, will skip model creation and transmission
@@ -41,7 +49,25 @@ device_identifiers_map = {}  # 存储设备ID与其ZMQ标识符的映射: {devic
 device_identifiers_lock = threading.Lock()  # 标识符映射的线程锁
 import global_config
 global Quntization_Option
- 
+
+#
+# 1. 目前一组设备能够正常推理
+# 2. 需要做到两组设备多组设备也能够正常注册并推理（但是目前是不是不好做啊，手机不太够）
+    # 2.1 也就是建组线程
+    # 2.2 首先需要多两台手机（1h） 连接校园网，登录机器，然后开始传输权重
+    # 好慢啊，终于搞定了
+
+    # 2.3 写一下建立多组并且隔绝的机制
+    # 现在是建立多组的机制，检查一下建组逻辑
+    # 现在建组是隔绝的端口的，每一组有不同的端口，所以需要对端口进行通信啊
+
+# 2. 但是活跃设备池的注册和设备恢复仍然存在问题
+# 3. 设备注册的时候，是不区分状态的，需要让客户端等待
+# 4. 设备要建组的时候，才将这一部分设备的状态设置为 working，需要重构一下逻辑
+# 5. 有设备故障的时候，将这一部分设备的状态置为恢复中，然后通信相关的IP和端口，加载相关的内容，再恢复通信
+# 5.
+
+
 # 定义活跃设备的通信函数
 def communication_open_close_active(sender, config, device_id, status, lock, open=True):
     """
@@ -186,6 +212,7 @@ class DevicePoolManager:
         # self.single_working_group = dict() # 每一组包含一个header，worker，待恢复worker
         self.working_groups = dict() # 包含single_working_group
         self.failed_active_devices = deque() # 包含所有的活跃设备池故障
+        self.failed_working_devices = deque()  # 包含所有的活跃设备池故障
 
 
         self.task_counter = 0
@@ -199,32 +226,7 @@ class DevicePoolManager:
         self.initialization_complete = False  # 标记是否完成初始化阶段
         self.active_device_threads = {}       # 存储活跃设备通信线程
 
-    def set_initialization_complete(self):
-        """标记初始化阶段已完成，将当前设备池中的设备设为工作设备"""
-        # 使用原子操作来更新设备池
 
-        self.initialization_complete = True
-        
-        print(f"初始化阶段完成！共有 {len(self.working_devices)} 个工作设备")
-        # 打印所有工作设备的详细信息
-        for i, device in enumerate(self.working_devices):
-            device_id = device.get("device_id", "N/A")
-            ip = device.get("ip", "N/A")
-            role = device.get("role", "N/A")
-            print(f"  工作设备 {i+1}: ID={device_id}, IP={ip}, 角色={role}")
-        
-        # 更新每个工作设备的状态
-        for device in self.working_devices:
-            device_id = device.get("device_id")
-            if device_id:
-                self.device_status[device_id] = {
-                    "status": "working",
-                    "last_heartbeat": time.time(),
-                    "info": device.copy()
-                }
-        
-        # 确保更新所有设备的状态
-        self.printInfo()
     
     def register_device(self, device_info):
         """注册新设备到设备池"""
@@ -233,6 +235,7 @@ class DevicePoolManager:
             ip = device_info.get("ip")
             role = device_info.get("role")
             status = device_info.get("status")
+            status = "working" # 先强制设置为工作状态
             if not device_id or not ip:
                 print("错误: 设备注册没有提供ID或IP地址")
                 return False
@@ -276,124 +279,368 @@ class DevicePoolManager:
             traceback.print_exc()
             return False
 
-    def start_create_device_group_thread(self, device_info):
+    def start_create_device_group_thread(self, single_working_group,registration_socket,port):
         """创建设备组"""
+        global  Quntization_Option, requested_model
+        group_id = str(uuid.uuid4())[:8]  # 唯一组ID
+        print(f"启动独立组 {group_id}")
         try:
-            device_id = device_info.get("device_id")
-            # 检查线程是否已经存在
-            if device_id in self.active_device_threads and self.active_device_threads[device_id].is_alive():
-                print(f"活跃设备 {device_id} 已有通信线程在运行")
-                return
-
-            # 状态将在通信过程中由消息交换决定，不预先设置
-
-            # 获取活跃设备信息
-            active_device_info = None
-            for device in self.active_devices:
-                if device.get("device_id") == device_id:
-                    active_device_info = device
-                    break
-
-            if not active_device_info:
-                print(f"错误: 无法找到活跃设备 {device_id} 的信息")
-                return
-
-            # 获取头节点（工作设备池的第一个设备）
-            head_device = None
-            if self.working_devices:
-                head_device = self.working_devices[0]
-            else:
-                print(f"警告: 工作设备池为空，无法确定头节点")
-                return
-
+            header_device = single_working_group.get()  # 取出header（阻塞直到有）
+            worker_device0 = single_working_group.get()  # 取出worker
+            list_of_devices = [header_device,worker_device0]
             # 首先获取原始的ip_module信息
-            active_device_ip = active_device_info.get("ip", "")
+            header_device_ip = header_device.get("ip", "")
+            worker_device0_ip = worker_device0.get("ip", "")
 
-            # 获取全局配置
-            global config, root_dir, Quntization_Option, requested_model
+            # 需要设定一下端口号，尽量可以和IP进行一个映射，这样可以进行通信，会有多个设备，每个设备都有一个端口号
 
-            # 确定模型名称和量化选项
+            group_config = {
+                "num_sample": b'1000',
+                "max_length": b'100',
+                "task_type": "generation".encode('utf-8'),
+                "core_pool_size": b'1',
+                "skip_model_transmission": MODEL_EXIST_ON_DEVICE,
+                "model_name": requested_model,
+                "reload_sampleId": None,
+                "onnx": True,
+                "ids": {},
+                "dependency": {},  # 后面填充
+                "group_id": None  # 组特定，后面设
+            }
+            print("初始化global config模板")
 
-            # 创建修改后的ip_module，将第二个IP替换为活跃设备的IP
-            modified_ip_module = [
-                [head_device.get("ip", ""),
-                 f"/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_unquantized_res/device0/module0/module.zip"],
-                [active_device_ip,
-                 f"/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_unquantized_res/device1/module1/module.zip"]
-            ]
+            # 深拷贝为组局部（完整独立）
 
-            print(f"为活跃设备 {device_id} 创建修改后的ip_module:")
-            print(modified_ip_module)
+            group_config["group_id"] = group_id
+            group_status = {}  # 局部状态
+            # 要进行模型分割和发送，加载等
+            # ============== 模型分割和发送部分 ==============
+            if requested_model:
+                # 确定模型和量化选项
+                if requested_model == "bloom560m":
+                    global Quntization_Option
+                    Quntization_Option = False
 
-            # 获取送信目录
-            to_send_path = retrieve_sending_dir(root_dir, requested_model,
-                                                quantization_option=Quntization_Option,
-                                                residual_connection=residual_connection_option)
+                elif requested_model == "bloom560m-int8":
+                    Quntization_Option = True
+                    requested_model = "bloom560m"  # 内部使用非量化名称
 
-            # 使用retrieve_file_cfg获取文件配置
-            file_cfg = retrieve_file_cfg(modified_ip_module)
+                else:
+                    print(f"使用默认模型: bloom560m")
 
-            # 使用retrieve_sending_info获取图和依赖信息
+                    Quntization_Option = False
+
+                    requested_model = "bloom560m"
+
+                # 检索模型发送目录
+                to_send_path = retrieve_sending_dir(root_dir, requested_model,
+                                                    quantization_option=Quntization_Option,
+                                                    residual_connection=residual_connection_option)
+
+                # 检查模型目录是否存在
+                if os.path.isdir(to_send_path):
+                    print('模型目录已存在，使用现有模型')
+                    # 加载现有的IP模块映射和会话信息
+
+                    # 创建修改后的ip_module，将第二个IP替换为活跃设备的IP
+                    modified_ip_module = [
+                        [header_device_ip,
+                         f"/Users/amstroy/Downloads/Linked-small/onnx_model__/to_send/bloom560m_unquantized_res/device0/module0/module.zip"],
+                        [worker_device0_ip,
+                         f"/Users/amstroy/Downloads/Linked-small/onnx_model__/to_send/bloom560m_unquantized_res/device1/module1/module.zip"]
+                    ]
+
+                    print(f"为活跃设备 {header_device_ip}   {worker_device0_ip} 创建修改后的ip_module:")
+                    print(modified_ip_module)
+
+
+
+
+                    with open(os.path.join(to_send_path, 'session.json'), 'r') as file:
+                        session_index_json = file.read()
+
+
+                    global session
+                    session = json.loads(session_index_json)
+                    file_cfg = retrieve_file_cfg(modified_ip_module)
+
+                    # 向设备发送监控初始化信号(False表示使用现有模型)
+                    for ip in ip_graph_requested:
+                        registration_socket.send_multipart([ip, b"False"])
+                else:
+                    print('模型目录不存在，开始准备模型...')
+                    # 向设备发送监控初始化信号(True表示需要准备新模型)
+                    for ip in ip_graph_requested:
+                        registration_socket.send_multipart([ip, b"True"])
+
+                    # 创建模型卡片对象
+                    model_card = ModelCard(requested_model,
+                                           quantization_option=Quntization_Option,
+                                           task_type=task,
+                                           residual_connection=residual_connection_option,
+                                           load_balancing_option=False,
+                                           split_size=split_size)
+
+                    # 准备优化信息
+                    mem_util, out_size_map, bytearray_path, flop_module_path, num_flop, module_flop_map, num_modules = model_card.prepare_optimization_info()
+                    tokenizer_dir = model_card.retreive_tokenizer_path()
+                    directory_path = os.path.dirname(bytearray_path)
+
+                    print(f'bytearray_path: {bytearray_path}')
+                    print(f'flop_module_path: {flop_module_path}')
+                    print(f'num_flop: {num_flop}')
+                    print(f'out_size_map: {out_size_map}')
+
+                    print(f"模型分割大小: {model_card.split_size}")
+                    print("使用Round-Robin分配方法")
+                    for ip in ip_graph_requested:
+                        send.send_multipart([ip, b"ready for monitor"])
+                    # # start monitor
+                    monitor_instance = monitor.Monitor(monitor_receive_interval, monitor_port, devices, requested_model, \
+                                                       bytearray_path, flop_module_path, num_flop, runtime_option)
+                    thread = threading.Thread(target=monitor_instance.start)
+                    thread.start()
+
+                    num_devices = len(devices)
+                    monitor_instance.is_monitor_ready.wait()  # 等待监控数据就绪
+
+                    # 参数
+                    ping_latency, bandwidths, TotalMem, AvailMem, flop_speed = monitor_instance.get_monitor_info()
+
+                    mem_threshold = .7  # set threshold for memory
+                    TotalMem = [m * mem_threshold for m in TotalMem]
+                    AvailMem = [m * mem_threshold for m in AvailMem]
+                    print("-----------------Test Optimizer Function----------------------")
+                    print("num_devices")
+                    print(num_devices)
+                    print("latency")
+                    print(ping_latency)
+                    print("bandwidth")
+                    print(bandwidths)
+                    print("totalMem")
+                    print(TotalMem)
+                    print("AvailMem")
+                    print(AvailMem)
+                    print("flop")
+                    print(flop_speed)
+
+                    if model_card.split_size:
+                        print("model_card.split_size: ", model_card.split_size)
+                        # load_balancer = Optimizer(num_devices=num_devices, num_modules=model_card.split_size)
+                        print("we use a round-robin approach")
+                    else:
+                        raise RuntimeError("The number of modules cannot be None! Check model_card.prepare_to_split().")
+
+                    def round_robin_module_arrangement(num_devices, num_modules):
+                        arrangement = [[0 for _ in range(num_modules)] for _ in range(num_devices)]
+                        modules_per_device = num_modules // num_devices
+                        extra_modules = num_modules % num_devices
+                        start = 0
+                        for i in range(num_devices):
+                            end = start + modules_per_device + (1 if i < extra_modules else 0)
+                            for j in range(start, end):
+                                arrangement[i][j] = 1
+                            start = end
+                        return np.array(arrangement)
+
+                    # 分配模块
+                    initial_module_arrangement = round_robin_module_arrangement(split_size, split_size)
+                    overlapping_module_arrangement = initial_module_arrangement
+                    print(f"模块分配方案:\n{initial_module_arrangement}")
+
+                    # 准备发送模型
+                    model_dirs = model_card.prepare_model_to_send(module_arrangement=initial_module_arrangement)
+                    device_module_order = model_card.device_module_arrangement
+                    device_dir_map = {tuple(device_module_order[i]): model_dirs[i] for i in range(len(model_dirs))}
+                    ip_device_module_map = {}
+                    for i in range(len(devices)):
+                        ip_device_module_map[devices[i]["ip"].encode("utf-8")] = device_module_order[
+                            i]  # .26: [0], .19: [2], ..
+
+                    # retreive session for inference
+                    session = [str(j) for i in device_module_order for j in i]  # [0, 2, 1]
+
+                    # sort the order of ip graph for transmission
+                    ip_module_map = {}
+                    sorted_device_module_order = sorted(device_module_order)
+                    final_sorted_device_module = [[0]] * len(
+                        sorted_device_module_order)  # [[ip, [0]], [ip, [1]], [ip, [2]]]
+                    for ip, val in ip_device_module_map.items():
+                        if sorted_device_module_order.index(val) == 0:  # for header
+                            final_sorted_device_module[0] = [ip, device_dir_map[tuple(val)]]
+                        elif sorted_device_module_order.index(val) != 0 and \
+                                sorted_device_module_order.index(val) != len(sorted_device_module_order) - 1:
+                            insert_index = sorted_device_module_order.index(val)
+                            final_sorted_device_module[insert_index] = [ip, device_dir_map[tuple(val)]]
+                        else:  # for tailer
+                            final_sorted_device_module[-1] = [ip, device_dir_map[tuple(val)]]
+
+                    print(f"session index: {session}")
+
+                    for d in range(len(final_sorted_device_module)):
+                        ip_encode = final_sorted_device_module[d][0]
+                        # current only retrieve single module path
+                        if final_sorted_device_module[d][1]:
+                            print(f"{ip_encode}:{final_sorted_device_module[d][1][0]}")
+                            file_cfg[ip_encode] = final_sorted_device_module[d][1][0]
+                            ip_graph.append(ip_encode.decode("utf-8"))
+                            ip_module.append([ip_encode.decode("utf-8"), file_cfg[ip_encode]])
+
+                    to_send_model_path = retrieve_sending_dir(root_dir, requested_model,
+                                                              quantization_option=Quntization_Option,
+                                                              residual_connection=residual_connection_option)
+                    ip_module_json = json.dumps(ip_module)
+                    session_index_json = json.dumps(session)
+
+                    # Save the JSON string to a file
+                    with open(os.path.join(to_send_model_path, "ip_module.json"), 'w') as file:
+                        file.write(ip_module_json)
+
+                    with open(os.path.join(to_send_model_path, "session.json"), 'w') as file:
+                        file.write(session_index_json)
+            else:
+                raise RuntimeError("requested model cannot be None!")
+                # 修改file_cfg JSON文件中的IP地址
+            ##################################################################################
+            ####################### 3. Sending models and tokenizer to devices ###############
+            ##################################################################################
+            print("------file_cfg--------")
+            print(file_cfg)
+            pathLists = []
+
+            for index, device in enumerate(list_of_devices):
+                ip = device.get("ip")
+                role = device.get("role")
+
+                if not Quntization_Option:
+                    print(f"使用非量化模型: bloom560m")
+                    pathList = [str(ip),
+                                f"/Users/amstroy/Downloads/Linked-small/onnx_model__/to_send/bloom560m_unquantized_res/device{index}/module{index}/module.zip"]
+                else:
+                    pathList = [str(ip),
+                                f"/Users/amstroy/Downloads/Linked-small/onnx_model__/to_send/bloom560m_quantized_int8_res/device{index}/module{index}/module.zip"]
+
+
+                pathLists.append(pathList)
+
+            # 保存路径列表
+            with open(os.path.join(to_send_path, 'ip_module.json'), 'w') as file:
+                json.dump(pathLists, file)
+
+            # 读取保存的JSON
+            with open(os.path.join(to_send_path, 'ip_module.json'), 'r') as file:
+                ip_module_json = file.read()
+
+            # 处理IP模块数据
+            ip_module = json.loads(ip_module_json)
+            file_cfg = retrieve_file_cfg(ip_module)
             ip_graph, dependencyMap = retrieve_sending_info(
                 root_dir, requested_model,
-                ip_module_list=modified_ip_module,
+                ip_module_list=ip_module,
                 quantization_option=Quntization_Option,
                 residual_connection=residual_connection_option
             )
 
-            # 创建会话索引
-            session = ["0", "1"]  # 简单的会话索引
+            print(f'\n图: {ip_graph}')
+            print(f"会话索引: {session}")
 
-            # 创建预填充的device_config
-            device_config = {
-                "device_id": device_id,
-                "ids": {},
+            # 创建配置
+            group_config.update({
                 "file_path": file_cfg,
+                "num_device": len(list_of_devices),
                 "head_node": ip_graph[0],
                 "tail_node": ip_graph[-1],
-                "graph": ",".join(ip_graph).encode('utf-8'),
+                "dependency": dependencyMap,
                 "session_index": ";".join(session).encode('utf-8'),
-                "task_type": b"generation",
-                "core_pool_size": b"1",
-                "num_sample": b"1000",
-                "max_length": b"500",
-                "num_device": 2,  # 头节点和活跃设备共2个
-                "skip_model_transmission": True,
-                "dependency": dependencyMap
-            }
+                "graph": ",".join(ip_graph).encode('utf-8'),
+            })
+            # 读取依赖关系JSON文件
             for idx, fPath in dependencyMap.items():
                 file = open(fPath, "r")
                 data = json.load(file)
-                device_config["dependency"][idx] = data
-            print(f"device_config: {device_config}")
-            # # 添加设备ID映射
-            # device_config["ids"][head_device.get("device_id", "")] = head_device.get("ip", "").encode('utf-8')
-            # device_config["ids"][device_id] = active_device_ip.encode('utf-8')
+                group_config["dependency"][idx] = data
 
-            # 打印生成的配置信息
-            print(f"为活跃设备 {device_id} 创建预填充配置:")
-            print(f"  头节点: {device_config['head_node']}")
-            print(f"  尾节点: {device_config['tail_node']}")
-            print(f"  IP图: {device_config['graph']}")
-            print(f"  会话索引: {device_config['session_index']}")
+            print(f"组{group_id} config: {group_config}")
+            print("配置完成，准备发送模型...")
+            # 启动通信线程
 
-            # 创建通信线程
-            global active_socket
-            thread = threading.Thread(
-                target=communication_open_close_active,
-                args=(active_socket, device_config, device_id, global_config.active_device_status,
-                      [threading.Lock(), threading.Lock()]),
-                daemon=True
-            )
-            thread.name = f"ActiveDevice-{device_id}"
-            thread.start()
+            # 通信线程准备
+            comm_locks = [threading.Lock(), threading.Lock()]  # 组锁
+            comm_conditions = [Condition(comm_locks[0]), Condition(comm_locks[1]), Condition(comm_locks[0])]  # 3个条件
+            # 创建新的通信套接字，使用monitor_port而不是原来的端口
+            context_communication = zmq.Context()
 
-            # 保存线程引用
-            self.active_device_threads[device_id] = thread
-            print(f"已为活跃设备 {device_id} 启动通信线程")
+            # registration_socket.send_multipart([ip, b"True"])
+            try:
+                print(f"尝试使用monitor_port: {monitor_port}作为通信端口")
+                communication_socket = context_communication.socket(zmq.ROUTER)
+                communication_socket.bind(f"tcp://*:{monitor_port}")
+                communication_socket.setsockopt(zmq.RCVTIMEO, 1000)
+                communication_socket.setsockopt(zmq.SNDTIMEO, 1000)
+                print(f"✅ 通信套接字已绑定到monitor_port: {monitor_port}")
+
+
+            except zmq.error.ZMQError as e:
+                print(f"❌ 无法绑定到monitor_port: {e}")
+
+                # 清理第一个socket
+                if 'communication_socket' in locals():
+                    communication_socket.close()
+
+                try:
+                    print(f"尝试使用备用端口monitor_port_2: {monitor_port_2}")
+                    communication_socket = context_communication.socket(zmq.ROUTER)
+                    communication_socket.bind(f"tcp://*:{monitor_port_2}")
+                    communication_socket.setsockopt(zmq.RCVTIMEO, 1000)
+                    communication_socket.setsockopt(zmq.SNDTIMEO, 1000)
+                    print(f"✅ 通信套接字已绑定到备用端口: {monitor_port_2}")
+
+                except zmq.error.ZMQError as e2:
+                    print(f"❌ 备用端口monitor_port_2也绑定失败: {e2}")
+                    context_communication.term()
+                    raise Exception(f"所有端口绑定失败: {monitor_port}, {monitor_port_2}") from e2
+
+            print("group_status:",group_status)
+            comm_threads = []
+            for i in range(len(list_of_devices)):
+                t = threading.Thread(
+                    target=root_server.communication_open_close,
+                    args=(communication_socket, group_config, group_status, comm_conditions, comm_locks )
+                )
+                t.daemon = True  # daemon：并行，非阻塞
+                comm_threads.append(t)
+                t.start()
+
+            # 非阻塞监控（防卡）
+            # 无限监控（长期循环版：无timeout，定期打印状态）
+            print(f"组 {group_id} 进入长期运行模式（监控中）")
+            while True:  # 改为无限
+                current_statuses = list(group_status.values())
+                if current_statuses and all(v == b'Finish' for v in current_statuses):
+                    print(f"组 {group_id} 完成（罕见）")
+                    break  # 如果有Finish，退出
+                elif current_statuses:
+                    running_count = sum(1 for v in current_statuses if v == b'Running')
+                    print(f"组 {group_id} 运行中: {running_count}/{len(current_statuses)} 设备Running")
+                else:
+                    print(f"组 {group_id} 等待初始状态...")
+
+                time.sleep(60)  # 延长到30s，减日志噪音（或60s）
+            # 清理
+            for t in comm_threads:
+                if t.is_alive():
+                    t.join(timeout=10)
+            communication_socket.close()
+            context_communication.term()
+
+
+
+        except KeyboardInterrupt:
+            print("\n用户中断，程序退出...")
 
         except Exception as e:
-            print(f"为活跃设备 {device_id} 启动通信线程时出错: {e}")
+            print(f"通信线程出错: {e}")
+            import traceback
             traceback.print_exc()
 
     def start_active_device_thread(self, device_id):
@@ -439,8 +686,8 @@ class DevicePoolManager:
             
             # 创建修改后的ip_module，将第二个IP替换为活跃设备的IP
             modified_ip_module = [
-                [head_device.get("ip", ""), f"/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_unquantized_res/device0/module0/module.zip"],
-                [active_device_ip, f"/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_unquantized_res/device1/module1/module.zip"]
+                [head_device.get("ip", ""), f"onnx_model__/to_send/bloom560m_unquantized_res/device0/module0/module.zip"],
+                [active_device_ip, f"onnx_model__/to_send/bloom560m_unquantized_res/device1/module1/module.zip"]
             ]
             
             print(f"为活跃设备 {device_id} 创建修改后的ip_module:")
@@ -551,7 +798,7 @@ class DevicePoolManager:
         print(f"活跃设备: {len(self.active_devices)}个")
         print(f"工作设备故障: {len(self.failed_working_devices)}个") 
         print(f"活跃设备故障: {len(self.failed_active_devices)}个")
-        print(f"初始化状态: {'已完成' if self.initialization_complete else '未完成'}")
+
         # 打印活跃设备线程状态
         if hasattr(self, 'active_device_threads') and self.active_device_threads:
             active_threads = sum(1 for t in self.active_device_threads.values() if t.is_alive())
@@ -560,78 +807,111 @@ class DevicePoolManager:
 # 创建设备池管理器实例
 device_pool_manager = DevicePoolManager()
 
-import queue
+import time  # 假设已import
+import uuid  # 假设已import
+from collections import deque  # 假设已import
+import queue  # 假设已import，用于Queue
 
-def create_group_thread_t():
-    """建组进程"""
-    print("建组进程线程已启动，当前组情况\n个数：{}\n详细情况：{}".format(
-        len(device_pool_manager.working_groups.keys()),
-        device_pool_manager.working_groups
-    ))
 
-    while True:
-        try:
-            # 统计数量
-            active_header_devices = 0
-            active_worker_devices = 0
-            for device_info in device_pool_manager.active_devices:
-                if device_info.get("role") == "header":
-                    active_header_devices += 1
-                if device_info.get("role") == "worker":
-                    active_worker_devices += 1
+def create_group_thread_t(socket, port):
+    """建组进程：持续检查活跃设备池，定期创建设备组"""
+    print("建组进程线程已启动")
 
-            if active_header_devices >= 1 and active_worker_devices >= 2:
-                # 创建新组
-                single_working_group = queue.Queue()
-                worker_index = 0
-                header_index = 0
-                devices_to_remove = []
-                active_header_device = None
-                active_worker_device = None
-                active_alt_worker_device = None
+    try:
+        while True:
+            try:
+                # 打印当前组情况
+                print("当前组情况\n个数：{}\n详细情况：{}".format(
+                    len(device_pool_manager.working_groups.keys()),
+                    device_pool_manager.working_groups
+                ))
 
-                # 收集设备
-                for i, device_info in enumerate(device_pool_manager.active_devices):
-                    if device_info.get("role") == "header" and header_index == 0:
-                        active_header_device = device_info
-                        header_index += 1
-                        devices_to_remove.append(i)
-                    elif device_info.get("role") == "worker" and worker_index < 2:
-                        if worker_index == 0:
+                # 统计数量
+                active_header_devices = 0
+                active_worker_devices = 0
+                for device_info in device_pool_manager.active_devices:
+                    if device_info.get("role") == "header":
+                        active_header_devices += 1
+                    if device_info.get("role") == "worker":
+                        active_worker_devices += 1
+
+                need_active_worker_devices = 1
+                print(
+                    f"活跃设备统计: Header={active_header_devices}, Worker={active_worker_devices}, 所需Worker>={need_active_worker_devices}")
+
+                if active_header_devices >= 1 and active_worker_devices >= need_active_worker_devices:
+                    print("条件满足，开始创建新组...")
+
+                    # 创建新组
+                    single_working_group = queue.Queue()
+                    worker_index = 0
+                    header_index = 0
+                    devices_to_remove = []
+                    active_header_device = None
+                    active_worker_device = None
+
+                    # 收集设备
+                    for i, device_info in enumerate(device_pool_manager.active_devices):
+                        if device_info.get("role") == "header" and header_index == 0:
+                            active_header_device = device_info
+                            header_index += 1
+                            devices_to_remove.append(i)
+                        elif device_info.get("role") == "worker" and worker_index < 1:
                             active_worker_device = device_info
-                        elif worker_index == 1:
-                            active_alt_worker_device = device_info
-                        worker_index += 1
-                        devices_to_remove.append(i)
+                            worker_index += 1
+                            devices_to_remove.append(i)
 
-                # 删除已选设备
-                for index in sorted(devices_to_remove, reverse=True):
-                    device_pool_manager.active_devices.pop(index)
+                    if active_header_device and active_worker_device:
+                        # 从活跃池移除设备
+                        active_list = list(device_pool_manager.active_devices)
+                        for index in sorted(devices_to_remove, reverse=True):
+                            try:
+                                removed_device = active_list.pop(index)
+                                print(f"从活跃池移除设备: {removed_device.get('device_id', 'unknown')}")
+                            except IndexError:
+                                print(f"警告: 索引 {index} 无效，跳过移除")
 
-                # 添加到队列
-                single_working_group.put(active_header_device)
-                single_working_group.put(active_worker_device)
-                single_working_group.put(active_alt_worker_device)
+                        device_pool_manager.active_devices = deque(active_list)
 
-                # 启动设备通信线程
-                device_pool_manager.start_create_device_group_thread(active_header_device)
-                device_pool_manager.start_create_device_group_thread(active_worker_device)
-                device_pool_manager.start_create_device_group_thread(active_alt_worker_device)
+                        # 添加到队列
+                        single_working_group.put(active_header_device)
+                        single_working_group.put(active_worker_device)
 
-                # 使用动态 groupID
+                        # 🔥 关键修改：使用线程启动设备组，避免阻塞
+                        group_thread = threading.Thread(
+                            target=device_pool_manager.start_create_device_group_thread,
+                            args=(single_working_group, socket, port)
+                        )
+                        group_thread.daemon = True
+                        group_thread.start()
+                        print(f"已启动设备组线程，线程ID: {group_thread.ident}")
 
+                        # 使用动态 groupID
+                        groupID = str(uuid.uuid4())
+                        device_pool_manager.working_groups[groupID] = single_working_group
 
-                groupID = str(uuid.uuid4())  # 生成唯一字符串 ID
-                device_pool_manager.working_groups.update({groupID: single_working_group})
+                        print(f"新组创建成功！GroupID={groupID}")
+                    else:
+                        print("警告: 未找到足够设备，无法创建组")
 
-        except Exception as e:
-            print(f"建组线程出错: {e}")
-            import traceback
-            traceback.print_exc()
-        # 等待下一次检查
-        time.sleep(device_pool_manager.create_group_check_interval)
+                else:
+                    print("条件不满足，跳过创建（Header<1 或 Worker<所需）")
 
+            except Exception as e:
+                print(f"建组线程单轮检查出错: {e}")
+                import traceback
+                traceback.print_exc()
 
+            # 等待下一次检查
+            print(f"等待 {device_pool_manager.create_group_check_interval} 秒后下次检查...")
+            time.sleep(device_pool_manager.create_group_check_interval)
+
+    except KeyboardInterrupt:
+        print("建组线程被用户中断，退出...")
+    except Exception as e:
+        print(f"建组线程整体出错: {e}")
+        import traceback
+        traceback.print_exc()
 def heartbeat_check_thread():
     """心跳检查线程"""
     print("心跳检查线程已启动，每 {} 秒检查一次设备心跳状态，超时时间 {} 秒".format(
@@ -785,12 +1065,14 @@ def handle_device_registration_and_heartbeat(socket, port):
     
     try:
         print(f"设备注册和心跳服务已启动，监听端口 {port}")
-        # 配置套接字超时，防止阻塞操作
-        socket.setsockopt(zmq.RCVTIMEO, 1000)  # 1秒接收超时
-        socket.setsockopt(zmq.SNDTIMEO, 1000)  # 1秒发送超时
+
         
         # 创建一个标志，表示系统是否正在进行故障处理
         system_handling_failure = False
+        # 新增：跟踪注册时间和打印间隔
+        last_registration_time = time.time()  # 初始为启动时间
+        last_interval_print = 0  # 上次打印的间隔秒数
+        last_heartbeat_print = time.time()  # 心跳监听状态打印时间
         
         while True:
             try:
@@ -804,6 +1086,13 @@ def handle_device_registration_and_heartbeat(socket, port):
                     message = socket.recv_multipart()
                 except zmq.error.Again:
                     # 接收超时，继续循环
+                    current_time = time.time()
+                    time_since_last_reg = current_time - last_registration_time
+                    interval = int(time_since_last_reg // 10) * 10  # 最近的10s倍数（10,20,30...）
+
+                    if interval >= 10 and interval > last_interval_print:
+                        print(f"距离上一次设备注册已过 {interval}s，无新注册")
+                        last_interval_print = interval
                     continue
                 
                 if not message or len(message) < 2:
@@ -880,6 +1169,12 @@ def handle_device_registration_and_heartbeat(socket, port):
                     # 注册设备
                     status = device_pool_manager.register_device(device_info)
                     print("status:",status)
+                    # 新增：更新最后注册时间，并打印重置信息
+                    last_registration_time = time.time()
+                    time_since_last = last_registration_time - last_interval_print / 10 * 10  # 粗略计算上个间隔
+                    if time_since_last > 0:
+                        print(f"新设备注册，距离上一次注册间隔约 {int(time_since_last)}s")
+                    last_interval_print = 0  # 重置打印标记，避免立即重复
                     # 发送响应消息
                     try:
                         if status=="active":
@@ -894,6 +1189,8 @@ def handle_device_registration_and_heartbeat(socket, port):
                             print("发送 working")
                     except zmq.error.ZMQError as e:
                         print(f"发送注册响应时出错: {e}")
+
+
 
                 # 正常工作心跳
                 elif action == "HEARTBEAT" or action == "HeartDetect":
@@ -1335,6 +1632,95 @@ def handle_system_failure():
         print(f"系统故障处理出错: {e}")
         traceback.print_exc()
 
+
+
+        """
+        
+        
+            # 创建修改后的ip_module，将第二个IP替换为活跃设备的IP
+            modified_ip_module = [
+                [head_device.get("ip", ""),
+                 f"onnx_model__/to_send/bloom560m_unquantized_res/device0/module0/module.zip"],
+                [active_device_ip,
+                 f"onnx_model__/to_send/bloom560m_unquantized_res/device1/module1/module.zip"]
+            ]
+
+            print(f"为活跃设备 {device_id} 创建修改后的ip_module:")
+            print(modified_ip_module)
+
+            # 获取送信目录
+            to_send_path = retrieve_sending_dir(root_dir, requested_model,
+                                                quantization_option=Quntization_Option,
+                                                residual_connection=residual_connection_option)
+
+            # 使用retrieve_file_cfg获取文件配置
+            file_cfg = retrieve_file_cfg(modified_ip_module)
+
+            # 使用retrieve_sending_info获取图和依赖信息
+            ip_graph, dependencyMap = retrieve_sending_info(
+                root_dir, requested_model,
+                ip_module_list=modified_ip_module,
+                quantization_option=Quntization_Option,
+                residual_connection=residual_connection_option
+            )
+
+            # 创建会话索引
+            session = ["0", "1"]  # 简单的会话索引
+
+            # 创建预填充的device_config
+            device_config = {
+                "device_id": device_id,
+                "ids": {},
+                "file_path": file_cfg,
+                "head_node": ip_graph[0],
+                "tail_node": ip_graph[-1],
+                "graph": ",".join(ip_graph).encode('utf-8'),
+                "session_index": ";".join(session).encode('utf-8'),
+                "task_type": b"generation",
+                "core_pool_size": b"1",
+                "num_sample": b"1000",
+                "max_length": b"500",
+                "num_device": 2,  # 头节点和活跃设备共2个
+                "skip_model_transmission": True,
+                "dependency": dependencyMap
+            }
+            for idx, fPath in dependencyMap.items():
+                file = open(fPath, "r")
+                data = json.load(file)
+                device_config["dependency"][idx] = data
+            print(f"device_config: {device_config}")
+            # # 添加设备ID映射
+            # device_config["ids"][head_device.get("device_id", "")] = head_device.get("ip", "").encode('utf-8')
+            # device_config["ids"][device_id] = active_device_ip.encode('utf-8')
+
+            # 打印生成的配置信息
+            print(f"为活跃设备 {device_id} 创建预填充配置:")
+            print(f"  头节点: {device_config['head_node']}")
+            print(f"  尾节点: {device_config['tail_node']}")
+            print(f"  IP图: {device_config['graph']}")
+            print(f"  会话索引: {device_config['session_index']}")
+
+            # 创建通信线程
+            global active_socket
+            thread = threading.Thread(
+                target=communication_open_close_active,
+                args=(active_socket, device_config, device_id, global_config.active_device_status,
+                      [threading.Lock(), threading.Lock()]),
+                daemon=True
+            )
+            thread.name = f"ActiveDevice-{device_id}"
+            thread.start()
+
+            # 保存线程引用
+            self.active_device_threads[device_id] = thread
+            print(f"已为活跃设备 {device_id} 启动通信线程")
+
+        except Exception as e:
+            print(f"为活跃设备 {device_id} 启动通信线程时出错: {e}")
+            traceback.print_exc()
+        
+        """
+
 def main():
     """主函数，包含设备注册、模型分割和发送功能"""
     global devices        # 引用全局变量
@@ -1347,14 +1733,14 @@ def main():
         context = zmq.Context()
         
         # 启动Web监控服务器
-        web_thread = threading.Thread(
-            target=start_web_server,
-            args=(device_pool_manager,),
-            daemon=True
-        )
-        web_thread.start()
-        print("Web监控服务器已启动，访问 http://localhost:34568 查看状态")
-        
+        # web_thread = threading.Thread(
+        #     target=start_web_server,
+        #     args=(device_pool_manager,),
+        #     daemon=True
+        # )
+        # web_thread.start()
+        # print("Web监控服务器已启动，访问 http://localhost:34568 查看状态")
+        #
         # 创建一个单一的注册/通信/心跳套接字
         PORT = 23456  # 设置统一的服务器端口
         registration_socket = context.socket(zmq.ROUTER)
@@ -1368,7 +1754,7 @@ def main():
         # 设置注册套接字的超时，只用于注册和心跳
         registration_socket.setsockopt(zmq.RCVTIMEO, 1000)  # 1秒接收超时
         registration_socket.setsockopt(zmq.SNDTIMEO, 1000)  # 1秒发送超时
-        
+
         # 设置活跃设备套接字的超时
         active_socket.setsockopt(zmq.RCVTIMEO, 1000)  # 1秒接收超时
         active_socket.setsockopt(zmq.SNDTIMEO, 1000)  # 1秒发送超时
@@ -1386,7 +1772,7 @@ def main():
         ip_graph = []  # 初始化ip_graph列表
         
         print("==== 分布式推理系统启动 ====")
-        print(f"等待设备注册，初始化阶段超时: {TIMEOUT}秒")
+
         print(f"正在监听端口: {PORT}")
         
         # 启动设备注册和心跳服务线程
@@ -1396,379 +1782,38 @@ def main():
             daemon=True
         )
         registration_thread.start()
-        
-        # 启动心跳检查线程
-        heartbeat_thread = threading.Thread(
-            target=heartbeat_check_thread,
-            daemon=True
-        )
-        heartbeat_thread.start()
+
+
+
+
+
+        # # 启动心跳检查线程
+        # heartbeat_thread = threading.Thread(
+        #     target=heartbeat_check_thread,
+        #     daemon=True
+        # )
+        # heartbeat_thread.start()
 
         # 启动建组线程
         create_group_thread = threading.Thread(
             target=create_group_thread_t,
+            args=(registration_socket, PORT),  # 传递套接字和端口
             daemon=True
         )
         create_group_thread.start()
-        # 等待初始化阶段完成
-        print("等待初始化阶段完成...")
-        initialization_complete = False
-        last_registration_time = time.time()  # 记录最后设备注册时间
-        device_count = 0  # 记录当前设备数量
-        
-        # 在主循环中使用超时检查，避免永久阻塞
-        while not initialization_complete:
-            current_device_count = 0
-            
-            # 获取当前设备数量并检查变化 - 最短持有锁的时间
-            with devices_pool_lock:
-                current_device_count = len(device_pool_manager.working_devices)
-                initialization_complete = device_pool_manager.initialization_complete
-            
-            # 如果设备数量发生变化，更新最后注册时间
-            if current_device_count > device_count:
-                last_registration_time = time.time()
-                device_count = current_device_count
-                print(f"新设备注册，当前设备数: {device_count}")
-            
-            # 检查是否超过10秒没有新设备注册
-            if time.time() - last_registration_time >= TIMEOUT and not initialization_complete:
-                if device_count > 0:  # 确保至少有一个设备
-                    # 初始化阶段结束，将当前设备设为工作设备
-                    with devices_pool_lock:
-                        if not device_pool_manager.initialization_complete:  # 再次检查以避免竞态条件
-                            device_pool_manager.set_initialization_complete()
-                            # 将设备添加到兼容旧代码的设备集合
-                            devices.clear()  # 清空现有设备
-                            for device in device_pool_manager.working_devices:
-                                device_entry = {
-                                    "ip": device.get("ip"),
-                                    "role": device.get("role"),
-                                    "device_id": device.get("device_id")
-                                }
-                                if device_entry["role"] == "header":
-                                    devices.appendleft(device_entry)
-                                else:
-                                    devices.append(device_entry)
-                            initialization_complete = True
-                    print(f"初始化完成，收集到 {device_count} 个工作设备")
-                else:
-                    print("警告: 初始化超时，但没有设备注册")
-                    return  # 如果没有设备，直接退出
-            
-            # 周期性打印状态
-            if time.time() - last_registration_time > 0 and int(time.time() - last_registration_time) % 2 == 0:
-                print(f"等待初始化... 距离上次设备注册已过去 {int(time.time() - last_registration_time)} 秒")
-                print(f"当前已收集到 {device_count} 个设备")
-            
-            time.sleep(0.5)  # 减少等待时间，更频繁地检查
-        
-        if device_count == 0:
-            print("初始化失败：没有设备注册")
-            return
-        
-        print(f"初始化阶段结束，工作设备数: {len(device_pool_manager.working_devices)}")
-        print(f"准备分割模型和发送模型...")
-      
-        # ============== 模型分割和发送部分 ==============
-        if requested_model:
-        # 确定模型和量化选项
-            if requested_model == "bloom560m":
-                global Quntization_Option
-                Quntization_Option = False
-            elif requested_model == "bloom560m-int8":
-               
-                Quntization_Option = True
-               
-                requested_model = "bloom560m"  # 内部使用非量化名称
-            else:
-                print(f"使用默认模型: bloom560m")
-               
-                Quntization_Option = False
-             
-                requested_model = "bloom560m"
-            
-            # 检索模型发送目录
-            to_send_path = retrieve_sending_dir(root_dir, requested_model, 
-                                            quantization_option=Quntization_Option,
-                                            residual_connection=residual_connection_option)
-            
-            # 检查模型目录是否存在
-            if os.path.isdir(to_send_path):
-                print('模型目录已存在，使用现有模型')
-                # 加载现有的IP模块映射和会话信息
-                with open(os.path.join(to_send_path, 'ip_module.json'), 'r') as file:
-                    ip_module_json = file.read()
-                
-                with open(os.path.join(to_send_path, 'session.json'), 'r') as file:
-                    session_index_json = file.read()
-                
-                ip_module = json.loads(ip_module_json)
-                global session 
-                session = json.loads(session_index_json)
-                file_cfg = retrieve_file_cfg(ip_module)
-                
-                # 向设备发送监控初始化信号(False表示使用现有模型)
-                for ip in ip_graph_requested:
-                    registration_socket.send_multipart([ip, b"False"])
-            else:
-                print('模型目录不存在，开始准备模型...')
-                # 向设备发送监控初始化信号(True表示需要准备新模型)
-                for ip in ip_graph_requested:
-                    registration_socket.send_multipart([ip, b"True"])
-                
-                # 创建模型卡片对象
-                model_card = ModelCard(requested_model, 
-                                    quantization_option=Quntization_Option, 
-                                    task_type=task,
-                                    residual_connection=residual_connection_option, 
-                                    load_balancing_option=False,
-                                    split_size=split_size)
-                
-                # 准备优化信息
-                mem_util, out_size_map, bytearray_path, flop_module_path, num_flop, module_flop_map, num_modules = model_card.prepare_optimization_info()
-                tokenizer_dir = model_card.retreive_tokenizer_path()
-                directory_path = os.path.dirname(bytearray_path)
-
-                print(f'bytearray_path: {bytearray_path}')
-                print(f'flop_module_path: {flop_module_path}')
-                print(f'num_flop: {num_flop}')
-                print(f'out_size_map: {out_size_map}')
-            
-                print(f"模型分割大小: {model_card.split_size}")
-                print("使用Round-Robin分配方法")
-                for ip in ip_graph_requested:
-                    send.send_multipart([ip, b"ready for monitor"])
-                # # start monitor
-                monitor_instance = monitor.Monitor(monitor_receive_interval, monitor_port, devices, requested_model, \
-                                        bytearray_path, flop_module_path, num_flop, runtime_option)
-                thread = threading.Thread(target=monitor_instance.start)
-                thread.start()
-
-                num_devices = len(devices)
-                monitor_instance.is_monitor_ready.wait()  # 等待监控数据就绪
-
-                # 参数
-                ping_latency, bandwidths, TotalMem, AvailMem, flop_speed = monitor_instance.get_monitor_info()
 
 
-                mem_threshold = .7  # set threshold for memory
-                TotalMem = [m * mem_threshold for m in TotalMem]
-                AvailMem = [m * mem_threshold for m in AvailMem]
-                print("-----------------Test Optimizer Function----------------------")
-                print("num_devices")
-                print(num_devices)
-                print("latency")
-                print(ping_latency)
-                print("bandwidth")
-                print(bandwidths)
-                print("totalMem")
-                print(TotalMem)
-                print("AvailMem")
-                print(AvailMem)
-                print("flop")
-                print(flop_speed)
+        print("主线程进入等待模式，按 Ctrl+C 退出...")
 
-                if model_card.split_size:
-                    print("model_card.split_size: ", model_card.split_size)
-                    # load_balancer = Optimizer(num_devices=num_devices, num_modules=model_card.split_size)
-                    print("we use a round-robin approach")
-                else:
-                    raise RuntimeError("The number of modules cannot be None! Check model_card.prepare_to_split().")
-                def round_robin_module_arrangement(num_devices, num_modules):
-                    arrangement = [[0 for _ in range(num_modules)] for _ in range(num_devices)]
-                    modules_per_device = num_modules // num_devices
-                    extra_modules = num_modules % num_devices
-                    start = 0
-                    for i in range(num_devices):
-                        end = start + modules_per_device + (1 if i < extra_modules else 0)
-                        for j in range(start, end):
-                            arrangement[i][j] = 1
-                        start = end
-                    return np.array(arrangement)
-                
-                # 分配模块
-                initial_module_arrangement = round_robin_module_arrangement(split_size, split_size)
-                overlapping_module_arrangement = initial_module_arrangement
-                print(f"模块分配方案:\n{initial_module_arrangement}")
-                
-                # 准备发送模型
-                model_dirs = model_card.prepare_model_to_send(module_arrangement=initial_module_arrangement)
-                device_module_order = model_card.device_module_arrangement
-                device_dir_map = {tuple(device_module_order[i]): model_dirs[i] for i in range(len(model_dirs))}
-                ip_device_module_map = {}
-                for i in range(len(devices)):
-                    ip_device_module_map[devices[i]["ip"].encode("utf-8")] = device_module_order[
-                        i]  # .26: [0], .19: [2], ..
+        running = True  # 移到这里，确保global
 
-                # retreive session for inference
-                session = [str(j) for i in device_module_order for j in i]  # [0, 2, 1]
-
-                # sort the order of ip graph for transmission
-                ip_module_map = {}
-                sorted_device_module_order = sorted(device_module_order)
-                final_sorted_device_module = [[0]] * len(sorted_device_module_order)  # [[ip, [0]], [ip, [1]], [ip, [2]]]
-                for ip, val in ip_device_module_map.items():
-                    if sorted_device_module_order.index(val) == 0:  # for header
-                        final_sorted_device_module[0] = [ip, device_dir_map[tuple(val)]]
-                    elif sorted_device_module_order.index(val) != 0 and \
-                            sorted_device_module_order.index(val) != len(sorted_device_module_order) - 1:
-                        insert_index = sorted_device_module_order.index(val)
-                        final_sorted_device_module[insert_index] = [ip, device_dir_map[tuple(val)]]
-                    else:  # for tailer
-                        final_sorted_device_module[-1] = [ip, device_dir_map[tuple(val)]]
-
-                print(f"session index: {session}")
-
-                for d in range(len(final_sorted_device_module)):
-                    ip_encode = final_sorted_device_module[d][0]
-                    # current only retrieve single module path
-                    if final_sorted_device_module[d][1]:
-                        print(f"{ip_encode}:{final_sorted_device_module[d][1][0]}")
-                        file_cfg[ip_encode] = final_sorted_device_module[d][1][0]
-                        ip_graph.append(ip_encode.decode("utf-8"))
-                        ip_module.append([ip_encode.decode("utf-8"), file_cfg[ip_encode]])
-
-                to_send_model_path = retrieve_sending_dir(root_dir, requested_model, quantization_option=Quntization_Option,
-                                                        residual_connection=residual_connection_option)
-                ip_module_json = json.dumps(ip_module)
-                session_index_json = json.dumps(session)
-
-                # Save the JSON string to a file
-                with open(os.path.join(to_send_model_path, "ip_module.json"), 'w') as file:
-                    file.write(ip_module_json)
-
-                with open(os.path.join(to_send_model_path, "session.json"), 'w') as file:
-                    file.write(session_index_json)
-        else:       
-            raise RuntimeError("requested model cannot be None!")    
-        # 修改file_cfg JSON文件中的IP地址
-        ##################################################################################
-        ####################### 3. Sending models and tokenizer to devices ###############
-        ##################################################################################
-        print("------file_cfg--------")
-        print(file_cfg)
-        pathLists = []
-        for index, device in enumerate(device_pool_manager.working_devices):
-            ip = device.get("ip")
-            role = device.get("role")
-         
-            if not Quntization_Option:
-                print(f"使用非量化模型: bloom560m")
-                pathList = [str(ip), f"/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_unquantized_res/device{index}/module{index}/module.zip"]
-            else:
-                pathList = [str(ip), f"/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_quantized_int8_res/device{index}/module{index}/module.zip"]
-            
-            # if not Quntization_Option:
-            #     pathList = [str(ip), f"/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_unquantized_seq/device{index}/module{index}/module.zip"]
-            # else:
-            #     pathList = [str(ip), f"/workspace/ams-LinguaLinked-Inference/onnx_model__/to_send/bloom560m_quantized_int8_seq/device{index}/module{index}/module.zip"]
-            
-            pathLists.append(pathList)
-        
-        # 保存路径列表
-        with open(os.path.join(to_send_path, 'ip_module.json'), 'w') as file:
-            json.dump(pathLists, file)
-        
-        # 读取保存的JSON
-        with open(os.path.join(to_send_path, 'ip_module.json'), 'r') as file:
-            ip_module_json = file.read()
-        
-        # 处理IP模块数据
-        ip_module = json.loads(ip_module_json)
-        file_cfg = retrieve_file_cfg(ip_module)
-        ip_graph, dependencyMap = retrieve_sending_info(
-            root_dir, requested_model, 
-            ip_module_list=ip_module,
-            quantization_option=Quntization_Option,
-            residual_connection=residual_connection_option
-        )
-        
-        print(f'\n图: {ip_graph}')
-        print(f"会话索引: {session}")
-        global config
-        # 创建配置
-        config = {
-            "file_path": file_cfg,
-            "num_sample": b'1000',
-            "num_device": len(device_pool_manager.working_devices),
-            "max_length": b'100',
-            "task_type": "generation".encode('utf-8'),
-            "core_pool_size": b'1',
-            "head_node": ip_graph[0],
-            "tail_node": ip_graph[-1],
-            "dependency": dependencyMap,
-            "session_index": ";".join(session).encode('utf-8'),
-            "graph": ",".join(ip_graph).encode('utf-8'),
-            "skip_model_transmission": MODEL_EXIST_ON_DEVICE,
-            "model_name": requested_model,
-            "reload_sampleId": None,
-            "onnx": True,
-            "ids": {}
-        }
-     
-        # 读取依赖关系JSON文件
-        for idx, fPath in dependencyMap.items():
-            file = open(fPath, "r")
-            data = json.load(file)
-            config["dependency"][idx] = data
-        
-   
-        print(f"config(正常情况下): {config}")
-        print("配置完成，准备发送模型...")
-        # 启动通信线程
-       
-        threads = []
-        lock = threading.Lock()
-        locks = [threading.Lock(), threading.Lock()]
-        conditions = [threading.Condition() for i in range(len(device_pool_manager.working_devices) + 1)]
-        
-    
-
-        
-        # 创建新的通信套接字，使用monitor_port而不是原来的端口
         try:
-            print(f"尝试使用monitor_port: {monitor_port}作为通信端口")
-            global communication_socket
-            communication_socket = context.socket(zmq.ROUTER)
-            communication_socket.bind(f"tcp://*:{monitor_port}")
-            print(f"通信套接字已绑定到monitor_port: {monitor_port}")
-        except zmq.error.ZMQError as e:
-            print(f"无法绑定到monitor_port: {e}")
-            # 尝试使用原始端口
-           
-               
-        
-        for i in range(config["num_device"]):
-            t = threading.Thread(
-                target=root_server.communication_open_close, 
-                args=(communication_socket, config, global_config.working_device_status, conditions, locks)
-            )
-            threads.append(t)
-        
-        # 启动所有线程
-        for i in threads:
-            i.start()
-        
-        # 等待所有线程完成
-        for t in threads:
-            t.join()
-            if hasattr(t, 'exception') and t.exception:
-                print(f"线程 {t.name} 出现异常: {t.exception}")
-        
-        print("模型加载和分配完成!")
-        
-        # 主线程等待退出信号，同时定期打印设备池状态
-        while running:
-            time.sleep(10)  # 每10秒打印一次设备池状态
-            print("\n当前设备池状态:")
-            device_pool_manager.printInfo()
-            print(f"初始化完成: {'是' if device_pool_manager.initialization_complete else '否'}")
-            
-            
-    except KeyboardInterrupt:
-        print("\n用户中断，程序退出...")
-        running = False
+            while running:  # 用running控制循环
+                time.sleep(1)  # 每秒检查一次，避免CPU 100%
+
+        except KeyboardInterrupt:
+            print("\n用户中断，程序退出...")
+            running = False
     except Exception as e:
         print(f"主线程出错: {e}")
         import traceback
@@ -1777,9 +1822,9 @@ def main():
         # 清理资源
         print("清理资源...")
         try:
+            print("正在关闭 ZeroMQ socket 和上下文...")
             registration_socket.close()
-            communication_socket.close()
-            active_socket.close()  # 关闭活跃设备通信套接字
+            active_socket.close()
             context.term()
         except Exception as e:
             print(f"关闭资源时出错: {e}")
