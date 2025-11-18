@@ -5,6 +5,7 @@ from threading import Thread
 import zmq
 import global_config
 import uuid
+from bidict import bidict
 """
     R: Ready
         client -> root; Show the status of edge device
@@ -462,8 +463,9 @@ def communication_information_prepare_(sender, config, status,   real_client_id,
 
     status[ip]['status'] = 'Ready'
 
+
     # 发送Open和相关配置
-    sender.send_multipart([ real_client_id, b'Open',
+    sender.send_multipart([real_client_id, b'Open',
                            config["graph"],
                            config["session_index"],
                            config["task_type"],
@@ -484,13 +486,50 @@ def communication_information_prepare_(sender, config, status,   real_client_id,
     print(f"Status: Prepare {config['ids'][real_client_id]}")
 
     return
+def communication_information_prepare_ip(sender, config, status,   real_client_id,info ):
+    print("Status Ready")
+    if len(info) != 3:
+        print("Error")
+        return
+
+    config["ids"][real_client_id] = info[2]
+    ip =  info[2].decode('utf-8')
+    status[ip]["info"].update({"identifier_2":real_client_id})
+    print(f"当前注册设备: {config['ids']}")
+
+    status[ip]['status'] = 'Ready'
+
+
+    # 发送Open和相关配置
+    sender.send_multipart([real_client_id, b'IPAligning',
+                           config["graph"],
+                           config["session_index"],
+                           config["task_type"],
+                           config["core_pool_size"],
+                           config["num_sample"],
+                           config["max_length"],
+                           json.dumps(config["dependency"]).encode(),
+                           int_to_bytes(config['num_device']),
+                           ])
+
+    status[ip]['status'] = 'IPAligning'
+    print(f"Status: IPAligning {config['ids'][real_client_id]}")
+
+
+
+    trans_model(sender, config, real_client_id, status,ip)
+
+    print(f"Status: Prepare {config['ids'][real_client_id]}")
+
+    return
 
 
 
 def communication_IPAlign(sender, context_communication,config, status):
     print("start communication_IPAlign")
     group_id = config.get("group_id", "")
-    client_id_ip = {}
+    client_id_ip = bidict()
+
     while True:
         try:
 
@@ -515,6 +554,7 @@ def communication_IPAlign(sender, context_communication,config, status):
 
 
 
+
             # 准备建组了
             if  msg == b'WaitIPAligning' :
                 # 开始对齐IP
@@ -526,29 +566,34 @@ def communication_IPAlign(sender, context_communication,config, status):
 
 
 
-                communication_information_prepare_(sender, config, status, client_id, info)
+                communication_information_prepare_ip(sender, config, status, client_id, info)
             elif msg == b'IPAlignedPrepare' :
                 status[client_id_ip[client_id]]["status"] = 'IPAlignedPrepare'
                 list_of_devices_ip = config["list_of_devices_ip"]
                 # 要找到是哪两个设备
-                all_IPAlign = check_ipAlign(status, config, mode="IPAlignedPrepare",list_of_devices_ip=list_of_devices_ip)
+                while True:
+                    all_IPAlign = check_ipAlign(status, config, mode="IPAlignedPrepare",list_of_devices_ip=list_of_devices_ip)
+                    if  all_IPAlign:
+                        break
 
                 if all_IPAlign:
                     print("所有设备都已IPAlign，开始发送Start消息")
                     # 向所有设备发送Start消息
-                    for device_id in config["ids"]:
-                        target_device = group_prefix + device_id
-                        device_ip = bytes_to_ip(device_id)
-                        print(f"向设备 {device_ip} 发送Start")
-                        sender.send_multipart([target_device, b"Start"])
-                        status[device_id] = b'Start'
-                        print(f"设备 {device_ip} 状态设置为Start")
+
+
+
+                    print(f"向设备 { client_id_ip[client_id] } 发送Start")
+                    sender.send_multipart([client_id, b"Start"])
+
+
+                    status[client_id_ip[client_id]]["status"] = b'Start'
+                    print(f"设备  { client_id_ip[client_id] }  状态设置为Start")
                 else:
-                    print(f"设备 {client_ip} IPAlignedPrepare，等待其他设备...")
+                    print(f"设备  { client_id_ip[client_id] }  IPAlignedPrepare，等待其他设备...")
 
             elif msg == b'Running':
-                print(f"Status: Running {config['ids'][real_client_id]}")
-                status[real_client_id] = b'Running'
+                print(f"Status: Running {config['ids'][client_id]}")
+                status[client_id_ip[client_id]]["status"] = b'Running'
 
 
             elif msg == b'Finish':

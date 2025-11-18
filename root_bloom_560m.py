@@ -918,11 +918,13 @@ class DevicePoolManager:
                 group_config["dependency"][idx] = data
 
             print(f"组{group_id} config: {group_config}")
+            print(f"graph : ",group_config["graph"])
             print("配置完成，准备发送模型...")
 
 
             # 更新状态位和配置信息
             self.group_config[group_id] = group_config
+
             for ip in list_of_devices_ip:
                 self.device_status[ip]["status"] = "WaitIPAligning"
                 self.device_status[ip]['info'].update({"group_config":group_config})
@@ -937,30 +939,28 @@ class DevicePoolManager:
             monitor_port = self.device_port_map[ip]
             # registration_socket.send_multipart([ip, b"True"])
 
-            def start_communication_with_client(ip):
-                monitor_port = self.device_port_map[ip]
-                print(f"使用monitor_port: {monitor_port}作为通信端口")
+            def start_communication_with_client( ip):
+                comm_port = self.device_port_map[ip]  # 客户端监听的端口
+                trigger_port = comm_port + 100  # 服务端通信端口（随意定）
 
-                # 1. 服务端主动连接客户端
-                context = zmq.Context()
-                connect_socket = context.socket(zmq.DEALER)
-                connect_socket.connect(f"tcp://{ip}:{monitor_port}")  # 主动连接！
-                connect_socket.send_multipart([b"WaitIPAligning"])
+                print(f"客户端 {ip} → trigger_port={trigger_port}, 服务端通信端口={comm_port}")
 
+                # Step 1: 服务端主动连接客户端的 trigger_port，发送触发信号
+                context1 = zmq.Context()
+                trigger_socket = context1.socket(zmq.DEALER)
+                trigger_socket.connect(f"tcp://{ip}:{trigger_port}")
+                trigger_socket.send_multipart([b"WaitIPAligning"])
+                print(f"已发送 WaitIPAligning")
 
+                # Step 2: 服务端 bind 长期通信端口，等待客户端 connect 回来
+                context2 = zmq.Context()
+                comm_socket = context2.socket(zmq.ROUTER)
+                comm_socket.bind(f"tcp://*:{comm_port}")
 
-                # context_communication = zmq.Context()
-                # # 2. 服务端 bind 端口，接收回复
-                # communication_socket = context_communication.socket(zmq.ROUTER)
-                # communication_socket.bind(f"tcp://*:{monitor_port}")
-                # communication_socket.setsockopt(zmq.RCVTIMEO, 1000)
-                # communication_socket.setsockopt(zmq.SNDTIMEO, 1000)
-                # print(f"通信套接字已绑定到monitor_port: {monitor_port}")
-
-                # 3. 启动 IP 对齐线程（后台长期运行）
+                # Step 3: 启动长期通信线程
                 t = threading.Thread(
                     target=root_server.communication_IPAlign,
-                    args=(connect_socket, context,group_config, self.device_status)
+                    args=(comm_socket, context2,group_config, self.device_status)
                 )
                 t.daemon = False
                 t.start()
